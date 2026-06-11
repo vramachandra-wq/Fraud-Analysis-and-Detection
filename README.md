@@ -134,7 +134,8 @@ This script creates:
 
 ## 5. Load Initial Data
 
-Import all source CSV files located in `banking_data` folder into the:
+Import all source CSV files located in `banking_data` folder into the:  
+[Files Link](https://azirotechnologies-my.sharepoint.com/:f:/g/personal/nmuralidhara_aziro_com/IgChLYluu48LQ5bNt3lecozvAXGYvkt-yFhaRT6NKncU6ss?e=BGTrVD)
 
 ```text
 staging schema in oltp_db
