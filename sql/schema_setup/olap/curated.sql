@@ -155,35 +155,3 @@ CREATE TABLE IF NOT EXISTS curated.fact_fraud_alerts (
 
 CREATE INDEX idx_fraud_alerts_transaction ON curated.fact_fraud_alerts(transaction_id);
 CREATE INDEX idx_fraud_alerts_customer ON curated.fact_fraud_alerts(customer_id);
-
-select * from curated.fact_transactions;
-select * from curated.fact_fraud_alerts;
-select * from curated.dim_location;
-select * from curated.dim_device;
-select * from curated.dim_customer;
-select * from curated.dim_account;
-
-select count(*) from curated.fact_transactions
-UNION
-select count(*) from curated.fact_fraud_alerts
-UNION
-select count(*) from curated.dim_location
-UNION
-select count(*) from curated.dim_device
-UNION
-select count(*) from curated.dim_customer
-UNION
-select count(*) from curated.dim_account;
-
-select * from curated.dim_customer where customer_id = 'HIST_TEST001'
-
-
-truncate table curated.fact_transactions;
-truncate table curated.fact_fraud_alerts;
-truncate table curated.dim_location;
-truncate table curated.dim_device;
-truncate table curated.dim_customer;
-truncate table curated.dim_account;
-
-
-DELETE FROM curated.stg_custome  WHERE customer_id = 'HIST_TEST001';

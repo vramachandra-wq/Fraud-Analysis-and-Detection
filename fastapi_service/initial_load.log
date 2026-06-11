@@ -1,0 +1,63 @@
+2026-03-25 11:05:28,209 [INFO] ============================================================
+2026-03-25 11:05:28,209 [INFO] INITIAL LOAD STARTED
+2026-03-25 11:05:28,209 [INFO] ============================================================
+2026-03-25 11:05:28,211 [INFO] Connecting to OLTP...
+2026-03-25 11:05:30,317 [INFO] Connecting to OLAP...
+2026-03-25 11:05:32,381 [INFO] Truncating all landing tables...
+2026-03-25 11:05:32,457 [INFO] Truncated landing.customers
+2026-03-25 11:05:32,462 [INFO] Truncated landing.accounts
+2026-03-25 11:05:32,473 [INFO] Truncated landing.devices
+2026-03-25 11:05:32,484 [INFO] Truncated landing.locations
+2026-03-25 11:05:32,494 [INFO] Truncated landing.transactions
+2026-03-25 11:05:32,726 [INFO] Source staging.stg_customers: 200,002 rows
+2026-03-25 11:05:37,246 [INFO] Source staging.stg_accounts: 250,000 rows
+2026-03-25 11:05:44,104 [INFO] Source staging.stg_devices: 300,000 rows
+2026-03-25 11:05:52,715 [INFO] Source staging.stg_locations: 150,000 rows
+2026-03-25 11:06:02,308 [INFO] Source staging.stg_transactions: 3,000,000 rows
+2026-03-25 11:07:59,528 [INFO] ============================================================
+2026-03-25 11:07:59,529 [INFO] INITIAL LOAD COMPLETE
+2026-03-25 11:07:59,529 [INFO] Total rows loaded: 3,900,002
+2026-03-25 11:07:59,530 [INFO] Total time: 151.3s
+2026-03-25 11:07:59,530 [INFO] ============================================================
+2026-04-02 00:47:58,882 [INFO] ============================================================
+2026-04-02 00:47:58,883 [INFO] INITIAL LOAD STARTED
+2026-04-02 00:47:58,884 [INFO] ============================================================
+2026-04-02 00:47:58,885 [INFO] Connecting to OLTP...
+2026-04-02 00:47:58,924 [INFO] Connecting to OLAP...
+2026-04-02 00:47:58,939 [INFO] Truncating all landing tables...
+2026-04-02 00:47:58,979 [INFO] Truncated landing.customers
+2026-04-02 00:47:58,984 [INFO] Truncated landing.accounts
+2026-04-02 00:47:58,991 [INFO] Truncated landing.devices
+2026-04-02 00:47:58,998 [INFO] Truncated landing.locations
+2026-04-02 00:47:59,006 [INFO] Truncated landing.transactions
+2026-04-02 00:47:59,093 [INFO] Source staging.stg_customers: 200,000 rows
+2026-04-02 00:48:01,623 [INFO] Source staging.stg_accounts: 250,000 rows
+2026-04-02 00:48:05,044 [INFO] Source staging.stg_devices: 300,000 rows
+2026-04-02 00:48:09,374 [INFO] Source staging.stg_locations: 150,000 rows
+2026-04-02 00:48:13,436 [INFO] Source staging.stg_transactions: 3,000,000 rows
+2026-04-02 00:49:51,452 [INFO] ============================================================
+2026-04-02 00:49:51,453 [INFO] INITIAL LOAD COMPLETE
+2026-04-02 00:49:51,454 [INFO] Total rows loaded: 3,900,000
+2026-04-02 00:49:51,454 [INFO] Total time: 112.6s
+2026-04-02 00:49:51,455 [INFO] ============================================================
+2026-04-06 11:12:38,393 [INFO] ============================================================
+2026-04-06 11:12:38,394 [INFO] INITIAL LOAD STARTED
+2026-04-06 11:12:38,395 [INFO] ============================================================
+2026-04-06 11:12:38,396 [INFO] Connecting to OLTP...
+2026-04-06 11:12:38,446 [INFO] Connecting to OLAP...
+2026-04-06 11:12:38,470 [INFO] Truncating all landing tables...
+2026-04-06 11:12:38,521 [INFO] Truncated landing.customers
+2026-04-06 11:12:38,535 [INFO] Truncated landing.accounts
+2026-04-06 11:12:38,554 [INFO] Truncated landing.devices
+2026-04-06 11:12:38,571 [INFO] Truncated landing.locations
+2026-04-06 11:12:38,591 [INFO] Truncated landing.transactions
+2026-04-06 11:12:38,868 [INFO] Source staging.stg_customers: 200,001 rows
+2026-04-06 11:12:43,198 [INFO] Source staging.stg_accounts: 250,000 rows
+2026-04-06 11:12:49,481 [INFO] Source staging.stg_devices: 300,001 rows
+2026-04-06 11:12:57,086 [INFO] Source staging.stg_locations: 150,000 rows
+2026-04-06 11:13:02,881 [INFO] Source staging.stg_transactions: 3,000,001 rows
+2026-04-06 11:15:06,151 [INFO] ============================================================
+2026-04-06 11:15:06,153 [INFO] INITIAL LOAD COMPLETE
+2026-04-06 11:15:06,155 [INFO] Total rows loaded: 3,900,003
+2026-04-06 11:15:06,155 [INFO] Total time: 147.8s
+2026-04-06 11:15:06,156 [INFO] ============================================================
