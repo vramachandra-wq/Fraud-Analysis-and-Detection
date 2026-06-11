@@ -1,0 +1,244 @@
+version: "3.8"
+
+networks:
+  fraud_net:
+    driver: bridge
+
+volumes:
+  superset_home:
+  oltp_data:
+  olap_data:
+  airflow_logs:
+  airflow_dags:
+  kafka_data:
+  zookeeper_data:
+  zookeeper_log:
+
+
+# SHARED ENVIRONMENT
+x-airflow-common-env: &airflow-common-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:Master%23123@olap_db:5432/airflow_db       # Replace with your Credentials
+  AIRFLOW__CORE__FERNET_KEY: "81HqDtbqAywKSOumSha3BhWNOdQ26slT6K0YaZeZyPs="
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+  AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "30"
+  AIRFLOW__CORE__DEFAULT_TIMEZONE: "UTC"
+  _PIP_ADDITIONAL_REQUIREMENTS: "soda-core-postgres setuptools"
+ 
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.8.1
+  environment:
+    <<: *airflow-common-env
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - airflow_logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+    - ./airflow/config:/opt/airflow/config
+  networks:
+    - fraud_net
+  depends_on:
+    olap_db:
+      condition: service_healthy
+
+services:
+
+  # 1. OLTP DATABASE — Staging Layer
+  oltp_db:
+    image: postgres:15
+    container_name: oltp_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres               # Replace with your Credentials
+      POSTGRES_PASSWORD: Master#123         # Replace with your Credentials
+      POSTGRES_DB: fraud_oltp
+    ports:
+      - "5433:5432"
+    volumes:
+      - oltp_data:/var/lib/postgresql/data
+      - ./init_scripts/oltp:/docker-entrypoint-initdb.d
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_replication_slots=5
+        -c max_wal_senders=5
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fraud_oltp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fraud_net
+
+  # 2. OLAP DATABASE — Warehouse Layer
+  olap_db:
+    image: postgres:15
+    container_name: olap_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres                # Replace with your Credentials
+      POSTGRES_PASSWORD: Master#123          # Replace with your Credentials
+      POSTGRES_DB: fraud_olap
+    ports:
+      - "5434:5432"
+    volumes:
+      - olap_data:/var/lib/postgresql/data
+      - ./init_scripts/olap:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fraud_olap"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - fraud_net
+
+  # 3. ZOOKEEPER
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_SYNC_LIMIT: 2
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    networks:
+      - fraud_net
+
+  # 4. KAFKA BROKER — Streaming Layer
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://127.0.0.1:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 48
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - fraud_net
+
+  # 5. DEBEZIUM (Kafka Connect) — CDC Layer
+  debezium:
+    image: debezium/connect:2.4
+    container_name: debezium
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      oltp_db:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: debezium-connect-group
+      CONFIG_STORAGE_TOPIC: debezium_connect_configs
+      OFFSET_STORAGE_TOPIC: debezium_connect_offsets
+      STATUS_STORAGE_TOPIC: debezium_connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    networks:
+      - fraud_net
+
+  # 6. APACHE SUPERSET — BI Visualization Layer
+  # 6. APACHE SUPERSET — BI Visualization Layer
+  superset:
+    image: apache/superset:3.0.0
+    container_name: superset
+    restart: unless-stopped
+    environment:
+      SUPERSET_SECRET_KEY: "supersecretkey1234567890"
+      SUPERSET_FEATURE_ENABLE_TEMPLATE_PROCESSING: "true"
+    command: >
+      /bin/bash -c "
+      superset db upgrade &&
+      superset fab create-admin \
+        --username admin \
+        --firstname Admin \
+        --lastname User \
+        --password admin \
+        --email admin@admin.com || true &&
+      superset init &&
+      superset run -h 0.0.0.0 -p 8088
+      "
+    ports:
+      - "8088:8088"
+    volumes:
+      - superset_home:/app/superset_home
+    networks:
+      - fraud_net
+    depends_on:
+      olap_db:
+        condition: service_healthy
+
+  # 7. AIRFLOW 
+  airflow_init:
+    <<: *airflow-common
+    container_name: airflow_init
+    entrypoint: /bin/bash
+    command: -c "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@fraudpoc.local"
+    restart: "no"
+
+  airflow_scheduler:
+    <<: *airflow-common
+    container_name: airflow_scheduler
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow_init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $$(hostname)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  airflow_webserver:
+    <<: *airflow-common
+    container_name: airflow_webserver
+    command: webserver
+    restart: unless-stopped
+    depends_on:
+      airflow_init:
+        condition: service_completed_successfully
+    ports:
+      - "8085:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5

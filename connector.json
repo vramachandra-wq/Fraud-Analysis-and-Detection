@@ -1,0 +1,19 @@
+{
+  "name": "fraud-oltp-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "oltp_db",
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "Master#123",
+    "database.dbname": "fraud_oltp",
+    "database.server.name": "fraud_oltp",
+    "table.include.list": "staging.stg_customers,staging.stg_accounts,staging.stg_transactions,staging.stg_devices,staging.stg_locations",
+    "plugin.name": "pgoutput",
+    "topic.prefix": "fraud_oltp",
+    "publication.autocreate.mode": "filtered",
+    "slot.name": "debezium_slot",
+    "publication.name": "debezium_publication",
+    "snapshot.mode": "never"
+  }
+}
