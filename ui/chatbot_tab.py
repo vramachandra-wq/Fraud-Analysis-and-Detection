@@ -112,10 +112,15 @@ JOIN curated.dim_location dl
 GROUP BY dl.merchant_category
 ORDER BY total_transaction_amount DESC;
 ```
+STRICT ALIASING RULES:
+- Use clear, distinct aliases everywhere in: SELECT, WHERE, GROUP BY, ORDER BY.
+- NEVER use PostgreSQL reserved keywords or system words as aliases (e.g., do NOT use 'to', 'from', 'user', 'date', 'order' as table or column aliases). 
+- If a table name would abbreviate to a keyword, append a generic descriptor or index instead (e.g., use 't_occ' or 'occs' instead of 'to').
 
-OUTPUT GUIDELINES:
+OUTPUT_GUIDELINES:
 Respond ONLY with the executable SQL query inside a markdown code block (```sql ... ```).
 Do not include any text, explanation, or commentary outside the code block.
+DO NOT include any SQL comments (using -- or /* */) inside the code block.
 """
 
 _KNOWN_DIMENSION_TABLES: list[str] = [
@@ -142,16 +147,29 @@ def _extract_sql(text: str) -> str:
 def _validate_sql(sql: str) -> tuple[bool, str]:
     """
     Run lightweight structural checks before executing against the database.
-
-    Returns:
-        (True, "")               — query passed all checks.
-        (False, reason_string)   — query failed; reason describes the violation.
+    Strips comments and literal string values to avoid false-positive keyword blocks.
     """
-    sql_lower = sql.lower().strip()
+    # 1. Clean up formatting and lowercase
+    sql_clean = sql.strip()
+    
+    # 2. Strip single-line comments (-- comment)
+    sql_clean = re.sub(r"--.*?\n", "\n", sql_clean)
+    
+    # 3. Strip multi-line comments (/* comment */)
+    sql_clean = re.sub(r"/\*.*?\*/", "", sql_clean, flags=re.DOTALL)
+    
+    # 4. Strip text literals ('...' or "...") to prevent flagging values like 'Creative'
+    sql_clean = re.sub(r"'.*?'", "''", sql_clean)
+    sql_clean = re.sub(r'".*?"', '""', sql_clean)
+    
+    # Normalize space and lowercase for regex checks
+    sql_lower = " ".join(sql_clean.lower().split())
 
+    # 5. Check allowed entry points
     if not (sql_lower.startswith("select") or sql_lower.startswith("with")):
         return False, "Only read-only SELECT or WITH (CTE) queries are permitted."
 
+    # 6. Scan strictly for isolated executable DDL/DML keywords
     for kw in _BLOCKED_KEYWORDS:
         if re.search(rf"\b{kw}\b", sql_lower):
             return False, (
@@ -159,6 +177,7 @@ def _validate_sql(sql: str) -> tuple[bool, str]:
                 "Only SELECT/WITH queries are allowed."
             )
 
+    # 7. Check for dimension table self-join hallucinations
     join_pattern = re.compile(r"(?:from|join)\s+(?:curated\.)?(\w+)", re.IGNORECASE)
     table_counts: dict[str, int] = {}
     for tbl in join_pattern.findall(sql_lower):
@@ -320,7 +339,14 @@ def _run_query_pipeline(user_query: str, container) -> None:
     llm_payload = [{"role": "system", "content": SQL_SYSTEM_PROMPT}]
     for msg in st.session_state.get("messages", [])[:-1]:
         if msg.get("role") in ("user", "assistant"):
-            llm_payload.append({"role": msg["role"], "content": msg["content"]})
+            content = msg.get("content", "")
+            
+            # Inject historical SQL context back to the LLM for flawless multi-turn tracking
+            if msg.get("role") == "assistant" and msg.get("sql"):
+                content += f"\n\nHistorical SQL generated for this turn:\n```sql\n{msg['sql']}\n```"
+                
+            llm_payload.append({"role": msg["role"], "content": content})
+            
     llm_payload.append({"role": "user", "content": user_query})
 
     with container:
@@ -345,6 +371,7 @@ def _run_query_pipeline(user_query: str, container) -> None:
                         sql_query = _repair_sql(sql_query, validation_error)
 
                     # Database execution
+                    # Database execution
                     status.write("🗄️ Executing query against database…")
                     conn = get_pooled_connection()
                     try:
@@ -355,14 +382,20 @@ def _run_query_pipeline(user_query: str, container) -> None:
                                 conn.rollback()
 
                             status.write("🔄 Database rejected syntax. Running auto-repair loop…")
-                            sql_query = _repair_sql(sql_query, str(db_err))
+                            # Attempt to repair the query
+                            repaired_sql = _repair_sql(sql_query, str(db_err))
 
-                            rep_valid, rep_err = _validate_sql(sql_query)
+                            # Run validation on the newly repaired SQL
+                            rep_valid, rep_err = _validate_sql(repaired_sql)
                             if not rep_valid:
                                 raise Exception(
                                     f"Post-repair structural guardrail violation: {rep_err}"
                                 )
 
+                            # Explicitly update sql_query variable so the rest of the pipeline saves the corrected version
+                            sql_query = repaired_sql
+                            
+                            # Execute the repaired query
                             result_df = pd.read_sql_query(sql_query, conn)
                     finally:
                         release_pooled_connection(conn)
