@@ -20,23 +20,54 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Session state bootstrap ────────────────────────────────────────────────
+# This now safely handles the "authenticated" state key as well
 init_session_state()
 
-# ── App title ──────────────────────────────────────────────────────────────
-st.title("Banking Transaction Fraud Detection")
+# ── Login Page View ────────────────────────────────────────────────────────
+def render_login_page():
+    st.title("🔒 Admin Login")
+    st.write("Please log in to access the Banking Fraud Detection dashboard.")
+    
+    # Using a form prevents Streamlit from rerunning on every keystroke
+    with st.form("login_form"):
+        username = st.text_input("Username", placeholder="Enter admin username")
+        password = st.text_input("Password", type="password", placeholder="Enter admin password")
+        submit_button = st.form_submit_button("Log In", use_container_width=True)
+        
+        if submit_button:
+            if username == "admin" and password == "admin":
+                st.session_state.authenticated = True
+                st.success("Access Granted!")
+                st.rerun()
+            else:
+                st.error("Invalid Username or Password. Please try again.")
 
-# ── Tabs ───────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs([
-    "🔍 Bank Transaction Fraud Detection",
-    "👑 VIP Accounts Management",
-    "💬 Analytics Chatbot",
-])
+# ── Main Application Switcher ──────────────────────────────────────────────
+if not st.session_state.authenticated:
+    render_login_page()
+else:
+    # App title displayed only after a successful login
+    st.title("Banking Transaction Fraud Detection")
+    
+    # Sidebar logout controls
+    st.sidebar.title("Navigation")
+    st.sidebar.write(f"Logged in as: **admin**")
+    if st.sidebar.button("Log Out", use_container_width=True):
+        st.session_state.authenticated = False
+        st.rerun()
 
-with tab1:
-    render_transaction_tab()
+    # Dashboard Tabs
+    tab1, tab2, tab3 = st.tabs([
+        "🔍 Bank Transaction Fraud Detection",
+        "👑 VIP Accounts Management",
+        "💬 Analytics Chatbot",
+    ])
 
-with tab2:
-    render_vip_management_tab()
+    with tab1:
+        render_transaction_tab()
 
-with tab3:
-    render_chatbot_tab()
+    with tab2:
+        render_vip_management_tab()
+
+    with tab3:
+        render_chatbot_tab()

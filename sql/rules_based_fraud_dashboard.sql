@@ -65,7 +65,7 @@ location_current AS (
 
 fraud_results AS (
     SELECT *
-    FROM curated.fn_analyze_transaction_fraud_2_claude(
+    FROM curated.fn_analyze_transaction_fraud(
         NULL,     -- p_lookback_days (full history)
         1,        -- p_high_val_days
         3,        -- p_high_val_txn_count

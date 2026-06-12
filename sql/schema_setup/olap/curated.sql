@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS curated.dim_customer (
     dwh_updated_at      TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_dim_customer_bk ON curated.dim_customer(customer_id);
-CREATE INDEX idx_dim_customer_current ON curated.dim_customer(customer_id, is_current);
+CREATE INDEX IF NOT EXISTS idx_dim_customer_bk ON curated.dim_customer(customer_id);
+CREATE INDEX IF NOT EXISTS idx_dim_customer_current ON curated.dim_customer(customer_id, is_current);
 
 -- 2. DIM_ACCOUNT — SCD Type 2
 CREATE TABLE IF NOT EXISTS curated.dim_account (
@@ -57,8 +57,8 @@ CREATE TABLE IF NOT EXISTS curated.dim_account (
     dwh_updated_at      TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_dim_account_bk ON curated.dim_account(account_id);
-CREATE INDEX idx_dim_account_current ON curated.dim_account(account_id, is_current);
+CREATE INDEX IF NOT EXISTS idx_dim_account_bk ON curated.dim_account(account_id);
+CREATE INDEX IF NOT EXISTS idx_dim_account_current ON curated.dim_account(account_id, is_current);
 
 -- 3. DIM_DEVICE — SCD Type 2
 CREATE TABLE IF NOT EXISTS curated.dim_device (
@@ -81,8 +81,8 @@ CREATE TABLE IF NOT EXISTS curated.dim_device (
     dwh_updated_at      TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_dim_device_bk ON curated.dim_device(device_id);
-CREATE INDEX idx_dim_device_current ON curated.dim_device(device_id, is_current);
+CREATE INDEX IF NOT EXISTS idx_dim_device_bk ON curated.dim_device(device_id);
+CREATE INDEX IF NOT EXISTS idx_dim_device_current ON curated.dim_device(device_id, is_current);
 
 -- 4. DIM_LOCATION — SCD Type 2
 
@@ -106,8 +106,8 @@ CREATE TABLE IF NOT EXISTS curated.dim_location (
     dwh_updated_at      TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_dim_location_bk ON curated.dim_location(location_id);
-CREATE INDEX idx_dim_location_current ON curated.dim_location(location_id, is_current);
+CREATE INDEX IF NOT EXISTS idx_dim_location_bk ON curated.dim_location(location_id);
+CREATE INDEX IF NOT EXISTS idx_dim_location_current ON curated.dim_location(location_id, is_current);
 
 -- 5. FACT_TRANSACTIONS
 CREATE TABLE IF NOT EXISTS curated.fact_transactions (
@@ -134,12 +134,12 @@ CREATE TABLE IF NOT EXISTS curated.fact_transactions (
     dwh_updated_at      TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_fact_transactions_account ON curated.fact_transactions(account_id);
-CREATE INDEX idx_fact_transactions_customer ON curated.fact_transactions(customer_id);
-CREATE INDEX idx_fact_transactions_device ON curated.fact_transactions(device_id);
-CREATE INDEX idx_fact_transactions_location ON curated.fact_transactions(location_id);
-CREATE INDEX idx_fact_transactions_fraud ON curated.fact_transactions(is_fraud);
-CREATE INDEX idx_fact_transactions_date ON curated.fact_transactions(transaction_date);
+CREATE INDEX IF NOT EXISTS idx_fact_transactions_account ON curated.fact_transactions(account_id);
+CREATE INDEX IF NOT EXISTS idx_fact_transactions_customer ON curated.fact_transactions(customer_id);
+CREATE INDEX IF NOT EXISTS idx_fact_transactions_device ON curated.fact_transactions(device_id);
+CREATE INDEX IF NOT EXISTS idx_fact_transactions_location ON curated.fact_transactions(location_id);
+CREATE INDEX IF NOT EXISTS idx_fact_transactions_fraud ON curated.fact_transactions(is_fraud);
+CREATE INDEX IF NOT EXISTS idx_fact_transactions_date ON curated.fact_transactions(transaction_date);
 
 -- 6. FACT_FRAUD_ALERTS
 CREATE TABLE IF NOT EXISTS curated.fact_fraud_alerts (
@@ -153,5 +153,5 @@ CREATE TABLE IF NOT EXISTS curated.fact_fraud_alerts (
     alert_created_at    TIMESTAMP DEFAULT NOW()
 );
 
-CREATE INDEX idx_fraud_alerts_transaction ON curated.fact_fraud_alerts(transaction_id);
-CREATE INDEX idx_fraud_alerts_customer ON curated.fact_fraud_alerts(customer_id);
+CREATE INDEX IF NOT EXISTS idx_fraud_alerts_transaction ON curated.fact_fraud_alerts(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_fraud_alerts_customer ON curated.fact_fraud_alerts(customer_id);

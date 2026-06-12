@@ -19,5 +19,6 @@ CREATE TABLE IF NOT EXISTS ml_predictions.transaction_logs(
     risk_category VARCHAR(50),
     blacklisted_account BOOLEAN DEFAULT FALSE,
 	fraud_source VARCHAR(50),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ai_summary TEXT
 );

@@ -49,6 +49,9 @@ def render_transaction_tab() -> None:
             st.error("❌ Invalid account. Transaction cannot be processed.")
             st.stop()
 
+        # Reset any stale manual action steps from previous evaluations
+        st.session_state.action_step = "idle"
+
         tx = {
             "account_id": account_id,
             "device_id": device_id,
@@ -78,11 +81,15 @@ def render_transaction_tab() -> None:
         st.session_state.features_dict = result.get("features_dict")
         st.session_state.vip_breach_type = result.get("vip_breach_type")
         st.session_state.vip_details = result.get("vip_details")
+        
+        # Explicitly declare UI status state for verification actions panel
+        st.session_state.action_step = "idle"
+        
         st.session_state.show_results = True
         st.rerun()
 
     # ── Results panel ────────────────────────────────────────────────────────
-    if not st.session_state.show_results:
+    if not st.session_state.get("show_results", False):
         return
 
     target_acct = st.session_state.saved_account_id
@@ -90,15 +97,15 @@ def render_transaction_tab() -> None:
     tx_details = cached_df.iloc[0].to_dict() if cached_df is not None else {}
     features_dict = st.session_state.features_dict
 
-    if st.session_state.blacklist_msg:
+    if st.session_state.get("blacklist_msg"):
         st.info(st.session_state.blacklist_msg)
 
     # CONDITION 1 – Blacklisted account view
-    if st.session_state.is_blacklisted:
+    if st.session_state.get("is_blacklisted", False):
         _render_blacklisted_view(target_acct, cached_df, tx_details, features_dict)
 
     # CONDITION 2 – VIP breach view
-    elif st.session_state.vip_breach_type:
+    elif st.session_state.get("vip_breach_type"):
         _render_vip_breach_view(target_acct, tx_details)
 
     # CONDITION 3 – Standard ML result view
@@ -170,7 +177,9 @@ def _render_vip_breach_view(target_acct: str, tx_details: dict) -> None:
     st.markdown("---")
     st.subheader("Verification Actions")
 
-    if st.session_state.get("action_step", "idle") == "idle":
+    current_step = st.session_state.get("action_step", "idle")
+
+    if current_step == "idle":
         c1, c2 = st.columns(2)
         with c1:
             if st.button("✅ Approve Transaction", use_container_width=True):
@@ -181,7 +190,7 @@ def _render_vip_breach_view(target_acct: str, tx_details: dict) -> None:
                 st.session_state.action_step = "pending_reject"
                 st.rerun()
 
-    elif st.session_state.action_step == "pending_approve":
+    elif current_step == "pending_approve":
         st.warning("⚠️ **Confirm Force Manual Approval:** Are you sure you want to bypass active VIP restrictions?")
         c1, c2 = st.columns(2)
         with c1:
@@ -194,13 +203,14 @@ def _render_vip_breach_view(target_acct: str, tx_details: dict) -> None:
                     int(tx_details["processing_time_ms"]), 0.01, 0, "NO_RISK",
                     False, "VIP_MANUAL_APPROVE", "Manually approved.",
                 ))
+                st.session_state.action_step = "idle"
                 show_manual_approve_success_dialog()
         with c2:
             if st.button("Cancel", use_container_width=True):
                 st.session_state.action_step = "idle"
                 st.rerun()
 
-    elif st.session_state.action_step == "pending_reject":
+    elif current_step == "pending_reject":
         st.error("⚠️ **Confirm Drop Transaction:** Are you sure you want to decline this transaction?")
         c1, c2 = st.columns(2)
         with c1:
@@ -213,6 +223,7 @@ def _render_vip_breach_view(target_acct: str, tx_details: dict) -> None:
                     int(tx_details["processing_time_ms"]), 0.95, 1, "HIGH_RISK",
                     False, "VIP_MANUAL_REJECT", "Dropped via audit.",
                 ))
+                st.session_state.action_step = "idle"
                 show_manual_reject_success_dialog()
         with c2:
             if st.button("Cancel", use_container_width=True):
@@ -267,7 +278,6 @@ def _render_inline_vip_form(target_acct: str) -> None:
                 st.session_state.display_vip_form = False
                 st.rerun()
             except VIPBlacklistedError:
-                # Dismiss form, then open the specialised dialog
                 st.session_state.display_vip_form = False
                 show_vip_blacklist_blocked_dialog(target_acct)
 

@@ -3,3 +3,4 @@ venv/
 .streamlit/secrets.toml
 __pycache__/
 banking_data/transactions.csv
+initial_load.log

@@ -1,3 +1,9 @@
+import os
+import sys
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+from ml.feature_engineering import FraudFeatureEngineer
 import pandas as pd
 import numpy as np
 from xgboost import XGBClassifier
@@ -9,7 +15,6 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import matplotlib.pyplot as plt
 import seaborn as sns
 import joblib
-import os
 
 # Create baseline directories for outputs if they don't exist
 os.makedirs(r'ml\images', exist_ok=True)
@@ -72,85 +77,85 @@ print('Handled Missing Values')
 # ==========================================
 # 3. FEATURE ENGINEERING TRANSFORMER
 # ==========================================
-class FraudFeatureEngineer(BaseEstimator, TransformerMixin):
+# class FraudFeatureEngineer(BaseEstimator, TransformerMixin):
 
-    def fit(self, X, y=None):
-        X = X.copy()
+#     def fit(self, X, y=None):
+#         X = X.copy()
 
-        # Datetime conversion safely inside fit
-        X['transaction_date'] = pd.to_datetime(X['transaction_date'], errors='coerce')
-        X['transaction_time'] = pd.to_datetime(X['transaction_time'], format='%H:%M:%S', errors='coerce')
+#         # Datetime conversion safely inside fit
+#         X['transaction_date'] = pd.to_datetime(X['transaction_date'], errors='coerce')
+#         X['transaction_time'] = pd.to_datetime(X['transaction_time'], format='%H:%M:%S', errors='coerce')
 
-        # High amount threshold
-        self.high_amount_threshold_ = X['amount'].quantile(0.95)
+#         # High amount threshold
+#         self.high_amount_threshold_ = X['amount'].quantile(0.95)
 
-        # Customer statistics mappings
-        self.customer_avg_ = X.groupby('account_id')['amount'].mean().to_dict()
-        self.customer_std_ = X.groupby('account_id')['amount'].std().fillna(1).replace(0, 1).to_dict()
+#         # Customer statistics mappings
+#         self.customer_avg_ = X.groupby('account_id')['amount'].mean().to_dict()
+#         self.customer_std_ = X.groupby('account_id')['amount'].std().fillna(1).replace(0, 1).to_dict()
         
-        # Device and Location counts profiles
-        self.device_count_ = X.groupby('device_id')['amount'].count().to_dict()
-        self.location_count_ = X.groupby('location_id')['amount'].count().to_dict()
+#         # Device and Location counts profiles
+#         self.device_count_ = X.groupby('device_id')['amount'].count().to_dict()
+#         self.location_count_ = X.groupby('location_id')['amount'].count().to_dict()
 
-        # VELOCITY LOOKUPS: Calculate historic daily transaction behavior per account across full data
-        daily_counts = X.groupby(['account_id', 'transaction_date']).size().reset_index(name='count')
-        self.account_avg_daily_count_ = daily_counts.groupby('account_id')['count'].mean().to_dict()
+#         # VELOCITY LOOKUPS: Calculate historic daily transaction behavior per account across full data
+#         daily_counts = X.groupby(['account_id', 'transaction_date']).size().reset_index(name='count')
+#         self.account_avg_daily_count_ = daily_counts.groupby('account_id')['count'].mean().to_dict()
         
-        daily_amounts = X.groupby(['account_id', 'transaction_date'])['amount'].sum().reset_index(name='daily_sum')
-        self.account_avg_daily_amount_ = daily_amounts.groupby('account_id')['daily_sum'].mean().to_dict()
+#         daily_amounts = X.groupby(['account_id', 'transaction_date'])['amount'].sum().reset_index(name='daily_sum')
+#         self.account_avg_daily_amount_ = daily_amounts.groupby('account_id')['daily_sum'].mean().to_dict()
 
-        # Global fallbacks for completely new production accounts/data
-        self.global_customer_avg_ = X['amount'].mean()
-        self.global_daily_count_ = daily_counts['count'].mean()
-        self.global_daily_amount_ = daily_amounts['daily_sum'].mean()
+#         # Global fallbacks for completely new production accounts/data
+#         self.global_customer_avg_ = X['amount'].mean()
+#         self.global_daily_count_ = daily_counts['count'].mean()
+#         self.global_daily_amount_ = daily_amounts['daily_sum'].mean()
 
-        return self
+#         return self
 
-    def transform(self, X):
-        X = X.copy()
+#     def transform(self, X):
+#         X = X.copy()
 
-        # Datetime conversion
-        X['transaction_date'] = pd.to_datetime(X['transaction_date'], errors='coerce')
-        X['transaction_time'] = pd.to_datetime(X['transaction_time'], format='%H:%M:%S', errors='coerce')
+#         # Datetime conversion
+#         X['transaction_date'] = pd.to_datetime(X['transaction_date'], errors='coerce')
+#         X['transaction_time'] = pd.to_datetime(X['transaction_time'], format='%H:%M:%S', errors='coerce')
 
-        # Date Features
-        X['transaction_day'] = X['transaction_date'].dt.day
-        X['transaction_month'] = X['transaction_date'].dt.month
-        X['transaction_weekday'] = X['transaction_date'].dt.weekday
-        X['transaction_hour'] = X['transaction_time'].dt.hour
+#         # Date Features
+#         X['transaction_day'] = X['transaction_date'].dt.day
+#         X['transaction_month'] = X['transaction_date'].dt.month
+#         X['transaction_weekday'] = X['transaction_date'].dt.weekday
+#         X['transaction_hour'] = X['transaction_time'].dt.hour
 
-        # Night Transaction Flag
-        X['is_night_transaction'] = ((X['transaction_hour'] >= 23) | (X['transaction_hour'] <= 5)).astype(np.uint8)
+#         # Night Transaction Flag
+#         X['is_night_transaction'] = ((X['transaction_hour'] >= 23) | (X['transaction_hour'] <= 5)).astype(np.uint8)
 
-        # Weekend Flag
-        X['is_weekend'] = (X['transaction_weekday'] >= 5).astype(np.uint8)
+#         # Weekend Flag
+#         X['is_weekend'] = (X['transaction_weekday'] >= 5).astype(np.uint8)
 
-        # Map Profiles securely using fit statistics (Production safe!)
-        customer_avg = X['account_id'].map(self.customer_avg_).fillna(self.global_customer_avg_)
-        customer_std = X['account_id'].map(self.customer_std_).fillna(1)
-        customer_std = np.maximum(customer_std, 1)
+#         # Map Profiles securely using fit statistics (Production safe!)
+#         customer_avg = X['account_id'].map(self.customer_avg_).fillna(self.global_customer_avg_)
+#         customer_std = X['account_id'].map(self.customer_std_).fillna(1)
+#         customer_std = np.maximum(customer_std, 1)
 
-        X['amount_vs_customer_avg'] = X['amount'] / (customer_avg + 1)
-        X['customer_amount_zscore'] = (X['amount'] - customer_avg) / customer_std
+#         X['amount_vs_customer_avg'] = X['amount'] / (customer_avg + 1)
+#         X['customer_amount_zscore'] = (X['amount'] - customer_avg) / customer_std
 
-        # Map Historical Velocities (Safe for single-row pipeline transforms)
-        X['historical_avg_daily_count'] = X['account_id'].map(self.account_avg_daily_count_).fillna(self.global_daily_count_)
-        X['historical_avg_daily_amount'] = X['account_id'].map(self.account_avg_daily_amount_).fillna(self.global_daily_amount_)
+#         # Map Historical Velocities (Safe for single-row pipeline transforms)
+#         X['historical_avg_daily_count'] = X['account_id'].map(self.account_avg_daily_count_).fillna(self.global_daily_count_)
+#         X['historical_avg_daily_amount'] = X['account_id'].map(self.account_avg_daily_amount_).fillna(self.global_daily_amount_)
 
-        # Device and Location historical counts profiles
-        X['device_transaction_count'] = X['device_id'].map(self.device_count_).fillna(0)
-        X['location_transaction_count'] = X['location_id'].map(self.location_count_).fillna(0)
+#         # Device and Location historical counts profiles
+#         X['device_transaction_count'] = X['device_id'].map(self.device_count_).fillna(0)
+#         X['location_transaction_count'] = X['location_id'].map(self.location_count_).fillna(0)
 
-        # Drop Raw Columns
-        X = X.drop(columns=[
-            'account_id',
-            'device_id',
-            'location_id',
-            'transaction_date',
-            'transaction_time'
-        ])
+#         # Drop Raw Columns
+#         X = X.drop(columns=[
+#             'account_id',
+#             'device_id',
+#             'location_id',
+#             'transaction_date',
+#             'transaction_time'
+#         ])
 
-        return X
+#         return X
 
 
 # Preprocessor Columns Setup
@@ -280,7 +285,7 @@ print('\nSaved Baseline Threshold Precision Recall Plot')
 # ==========================================
 production_model_path = r"ml\models\xgboost_fraud_detection_production.pkl"
 joblib.dump(production_pipeline, production_model_path)
-print(f"\n🚀 Complete pipeline successfully trained and saved to: {production_model_path}")
+print(f"\nComplete pipeline successfully trained and saved to: {production_model_path}")
 
 
 # ==========================================
@@ -374,7 +379,7 @@ plt.savefig(os.path.join(custom_folder_path, 'xgboost_feature_importance.jpeg'),
 plt.close()
 print('Saved Custom Feature Importance Image')
 
-print(f"\n✅ All operational evaluation charts updated and saved cleanly inside: '{custom_folder_path}'")
+print(f"\nAll operational evaluation charts updated and saved cleanly inside: '{custom_folder_path}'")
 
 # ==========================================
 # 7. CUSTOM OPERATIONAL THRESHOLD EVALUATION (0.25 THRESHOLD)
@@ -467,4 +472,4 @@ plt.savefig(os.path.join(custom_folder_path, 'xgboost_feature_importance.jpeg'),
 plt.close()
 print('Saved Custom Feature Importance Image')
 
-print(f"\n✅ All operational evaluation charts updated and saved cleanly inside: '{custom_folder_path}'")
+print(f"\nAll operational evaluation charts updated and saved cleanly inside: '{custom_folder_path}'")

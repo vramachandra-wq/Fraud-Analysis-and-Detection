@@ -1,7 +1,6 @@
 import pandas as pd
 from ml.model_loader import load_pipeline
 
-
 def run_ml_prediction(input_df: pd.DataFrame) -> tuple[float, int, str]:
     """
     Run the ML pipeline on a single-row DataFrame.
