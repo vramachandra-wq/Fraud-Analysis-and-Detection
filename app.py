@@ -47,7 +47,7 @@ if not st.session_state.authenticated:
     render_login_page()
 else:
     # App title displayed only after a successful login
-    st.title("Banking Transaction Fraud Detection")
+    st.title("FinGuard Platform")
     
     # Sidebar logout controls
     st.sidebar.title("Navigation")
@@ -58,9 +58,9 @@ else:
 
     # Dashboard Tabs
     tab1, tab2, tab3 = st.tabs([
-        "🔍 Bank Transaction Fraud Detection",
-        "👑 VIP Accounts Management",
-        "💬 Analytics Chatbot",
+        "🔍 Bank Transaction Fraud Detection Engine",
+        "👑 Premium Accounts Hub",
+        "💬 AI Data Analyst Assistant",
     ])
 
     with tab1:
