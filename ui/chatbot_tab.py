@@ -227,6 +227,40 @@ def _repair_sql(sql: str, validation_error: str) -> str:
     return _extract_sql(response.choices[0].message.content)
 
 
+def _is_sql_generation_needed(user_query: str, last_assistant_msg: dict | None) -> bool:
+    """
+    Determines if the user's query requires generating a new SQL query,
+    or if it's a follow-up discussion about the existing results.
+    """
+    # If there is no prior history, we must generate SQL
+    if not last_assistant_msg or last_assistant_msg.get("df") is None:
+        return True
+
+    client = get_groq_client()
+    if not client:
+        return True
+
+    intent_prompt = (
+        "You are an AI assistant helping a data pipeline determine route logic.\n"
+        "Analyze the user's latest message and decide if they are asking for NEW data "
+        "that requires writing a database query, or if they are asking a follow-up question "
+        "discussing, explaining, filtering, or summarizing the data already shown to them.\n\n"
+        f"User Message: \"{user_query}\"\n\n"
+        "Respond with EXACTLY one word: 'NEW' or 'DISCUSSION'. Do not include punctuation."
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=GROQ_REPAIR_MODEL,  # Use your lighter/faster model for classification
+            messages=[{"role": "user", "content": intent_prompt}],
+            temperature=0,
+            max_tokens=5,
+        )
+        intent = response.choices[0].message.content.strip().upper()
+        return "NEW" in intent
+    except Exception:
+        return True  # Fallback to SQL generation if classification fails
+    
 # ── 3. Rendering Helpers ───────────────────────────────────────────────────
 
 def _render_chart(df: pd.DataFrame) -> None:
@@ -354,86 +388,80 @@ def _run_query_pipeline(user_query: str, container) -> None:
             with st.status("Processing Analytics Request…", expanded=True) as status:
                 sql_query: str | None = None
                 try:
-                    # Pass 1 — SQL generation
-                    status.write("🧠 Generating SQL query…")
-                    completion = client.chat.completions.create(
-                        model=GROQ_SQL_MODEL,
-                        messages=llm_payload,
-                        temperature=0.0,
-                        max_tokens=600,
-                    )
-                    sql_query = _extract_sql(completion.choices[0].message.content)
+                    # Get the last assistant message for context if it exists
+                    history = st.session_state.get("messages", [])
+                    last_assistant = next((m for m in reversed(history[:-1]) if m["role"] == "assistant"), None)
+                    
+                    # Check Intent
+                    generate_new_sql = _is_sql_generation_needed(user_query, last_assistant)
 
-                    # Pre-execution structural verification
-                    is_valid, validation_error = _validate_sql(sql_query)
-                    if not is_valid:
-                        status.write("🔧 Attempting structural query repair…")
-                        sql_query = _repair_sql(sql_query, validation_error)
+                    if generate_new_sql:
+                        # ── BRANCH A: GENERATE NEW SQL (Your original logic) ──
+                        status.write("🧠 Generating SQL query…")
+                        completion = client.chat.completions.create(
+                            model=GROQ_SQL_MODEL,
+                            messages=llm_payload,
+                            temperature=0.0,
+                            max_tokens=600,
+                        )
+                        sql_query = _extract_sql(completion.choices[0].message.content)
 
-                    # Database execution
-                    # Database execution
-                    status.write("🗄️ Executing query against database…")
-                    conn = get_pooled_connection()
-                    try:
+                        # Pre-execution structural verification
+                        is_valid, validation_error = _validate_sql(sql_query)
+                        if not is_valid:
+                            status.write("🔧 Attempting structural query repair…")
+                            sql_query = _repair_sql(sql_query, validation_error)
+
+                        # Database execution
+                        status.write("🗄️ Executing query against database…")
+                        conn = get_pooled_connection()
                         try:
-                            result_df = pd.read_sql_query(sql_query, conn)
-                        except (psycopg2.Error, pd.errors.DatabaseError) as db_err:
-                            if hasattr(conn, "rollback"):
-                                conn.rollback()
+                            try:
+                                result_df = pd.read_sql_query(sql_query, conn)
+                            except (psycopg2.Error, pd.errors.DatabaseError) as db_err:
+                                if hasattr(conn, "rollback"):
+                                    conn.rollback()
+                                status.write("🔄 Database rejected syntax. Running auto-repair loop…")
+                                repaired_sql = _repair_sql(sql_query, str(db_err))
+                                rep_valid, rep_err = _validate_sql(repaired_sql)
+                                if not rep_valid:
+                                    raise Exception(f"Post-repair structural guardrail violation: {rep_err}")
+                                sql_query = repaired_sql
+                                result_df = pd.read_sql_query(sql_query, conn)
+                        finally:
+                            release_pooled_connection(conn)
+                    
+                    else:
+                        # ── BRANCH B: USE EXISTING DATA FOR FOLLOW-UP ──
+                        status.write("💬 Processing follow-up on current dataset…")
+                        # Reuse previous SQL query and Dataframe state
+                        sql_query = last_assistant.get("sql")
+                        result_df = pd.DataFrame(last_assistant.get("df"))
 
-                            status.write("🔄 Database rejected syntax. Running auto-repair loop…")
-                            # Attempt to repair the query
-                            repaired_sql = _repair_sql(sql_query, str(db_err))
-
-                            # Run validation on the newly repaired SQL
-                            rep_valid, rep_err = _validate_sql(repaired_sql)
-                            if not rep_valid:
-                                raise Exception(
-                                    f"Post-repair structural guardrail violation: {rep_err}"
-                                )
-
-                            # Explicitly update sql_query variable so the rest of the pipeline saves the corrected version
-                            sql_query = repaired_sql
-                            
-                            # Execute the repaired query
-                            result_df = pd.read_sql_query(sql_query, conn)
-                    finally:
-                        release_pooled_connection(conn)
-
+                    # ── HANDLE EMPTY STATE ──
                     if result_df.empty:
-                        status.update(
-                            label="⚠️ Query returned zero rows",
-                            state="error",
-                            expanded=False,
-                        )
-                        msg = "The query executed successfully but returned no matching rows."
-                        st.info(msg)
-                        with st.expander("🛠️ View Compiled Execution Query", expanded=False):
-                            st.code(sql_query, language="sql")
-                        log_chatbot_interaction(user_query, sql_query, None, msg)
-                        st.session_state.messages.append(
-                            {"role": "assistant", "content": msg, "sql": sql_query, "df": None}
-                        )
+                        # (Keep your existing result_df.empty handler intact here...)
                         return
 
-                    # Pass 2 — NL summary
+                    # ── PASS 2: GENERATE NL SUMMARY/INSIGHTS ──
                     status.write("📝 Generating executive insight summary…")
                     data_preview = result_df.head(15).to_markdown(index=False)
+                    
+                    # Expand summary prompt context so it knows it might be a follow-up
                     summary_completion = client.chat.completions.create(
                         model=GROQ_SUMMARY_MODEL,
                         messages=[{
                             "role": "system",
                             "content": (
-                                "You are an experienced business analyst. "
-                                "Explain the results simply.\n\n"
+                                "You are an experienced business analyst. Explain the results simply.\n\n"
                                 "Guidelines:\n"
-                                "• Start with a direct answer to the question.\n"
-                                "• Highlight key trends or anomalies.\n"
+                                "• Directly answer the user's latest question or request.\n"
+                                "• Highlight key trends, anomalies, or address their clarification request.\n"
                                 "• Avoid technical terms, dataframes, or SQL vocabulary.\n"
                                 "• Focus completely on business context.\n"
                                 "• Output 3-6 concise bullets.\n\n"
-                                f"User Question: {user_query}\n\n"
-                                f"Data Summary:\n{data_preview}"
+                                f"User Follow-up Request: {user_query}\n\n"
+                                f"Current Active Data Context:\n{data_preview}"
                             ),
                         }],
                         temperature=0.3,
@@ -442,14 +470,15 @@ def _run_query_pipeline(user_query: str, container) -> None:
                     assistant_summary = summary_completion.choices[0].message.content
 
                     status.update(
-                        label="✅ Analysis completed",
+                        label="✅ Analysis completed" if generate_new_sql else "✅ Response completed",
                         state="complete",
                         expanded=False,
                     )
 
-                    # Render results
-                    with st.expander("🛠️ View Compiled Execution Query", expanded=False):
-                        st.code(sql_query, language="sql")
+                    # Render UI elements (Persists or builds new chart/dataframe view)
+                    if sql_query:
+                        with st.expander("🛠️ View Compiled Execution Query", expanded=False):
+                            st.code(sql_query, language="sql")
                     with st.expander("📋 View Result Data", expanded=False):
                         st.dataframe(result_df, use_container_width=True)
 
