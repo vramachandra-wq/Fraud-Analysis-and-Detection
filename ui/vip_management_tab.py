@@ -7,7 +7,10 @@ from services.vip_service import (
     provision_vip,
     VIPBlacklistedError,
 )
-from ui.dialogs import show_vip_blacklist_blocked_dialog
+from ui.dialogs import (
+    show_vip_blacklist_blocked_dialog,
+    show_confirm_vip_revocation_dialog,  # Added confirmation dialog import
+)
 
 
 def render_vip_management_tab() -> None:
@@ -18,6 +21,15 @@ def render_vip_management_tab() -> None:
 
     search_account_id = st.text_input("Enter Account ID", key="vip_mgmt_search_id")
     if not search_account_id.strip():
+        return
+
+    # Check if a deletion process just completed for this specific account
+    if st.session_state.get(f"vip_revoked_{search_account_id}"):
+        st.success(f"🔥 Account **{search_account_id}** successfully removed from VIP status.")
+        # Clear the temporary signal state so it doesn't loop infinitely
+        del st.session_state[f"vip_revoked_{search_account_id}"]
+        # Force a rendering reload to show the fresh clean Registration UI variant downstream
+        st.button("Acknowledge & Refresh View", use_container_width=True)
         return
 
     vip_data = fetch_vip_details(search_account_id)
@@ -46,28 +58,44 @@ def _render_existing_vip(account_id: str, vip_data: dict) -> None:
         )
 
     st.markdown("---")
-    st.subheader("Update Limits")
+    
+    # Segment configurations neatly into operational UI tabs
+    tab_update, tab_danger = st.tabs(["⚙️ Modify Limits", "🛑 Remove From VIP Tier"])
 
-    with st.form(key="update_vip_limits_form"):
-        new_amt_limit = st.number_input(
-            "New Transaction Amount Limit ($)",
-            min_value=0.0,
-            value=float(vip_data["amount_per_transaction_limit"]),
-            step=500.0,
+    with tab_update:
+        # Unique form keys forced dynamically by account_id strings to combat core caching bugs
+        with st.form(key=f"update_vip_limits_form_{account_id}"):
+            new_amt_limit = st.number_input(
+                "New Transaction Amount Limit ($)",
+                min_value=0.0,
+                value=float(vip_data["amount_per_transaction_limit"]),
+                step=500.0,
+                key=f"amt_limit_input_{account_id}"
+            )
+            new_vol_limit = st.number_input(
+                "New Transaction Volume Limit (Daily)",
+                min_value=1,
+                value=int(vip_data["transactions_limit"]),
+                step=1,
+                key=f"vol_limit_input_{account_id}"
+            )
+            if st.form_submit_button("Save and Replace Limits", use_container_width=True):
+                try:
+                    modify_vip_limits(account_id, new_amt_limit, int(new_vol_limit))
+                    st.success(f"💾 Limits updated successfully for account **{account_id}**!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Failed to update table record entries: {e}")
+
+    with tab_danger:
+        st.markdown("### Remove From VIP Tier")
+        st.markdown(
+            "Removing this profile drops this customer out of the dedicated VIP tier."
         )
-        new_vol_limit = st.number_input(
-            "New Transaction Volume Limit (Daily)",
-            min_value=1,
-            value=int(vip_data["transactions_limit"]),
-            step=1,
-        )
-        if st.form_submit_button("Save and Replace Limits", use_container_width=True):
-            try:
-                modify_vip_limits(account_id, new_amt_limit, int(new_vol_limit))
-                st.success(f"💾 Limits updated successfully for account **{account_id}**!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ Failed to update table record entries: {e}")
+        
+        # Kept outside a form container layout block to immediately overlay the Dialog Modal layer
+        if st.button("🚨 Revoke VIP Privileges", key=f"revoke_btn_{account_id}", use_container_width=True):
+            show_confirm_vip_revocation_dialog(account_id)
 
 
 def _render_new_vip_registration(account_id: str) -> None:
@@ -84,23 +112,22 @@ def _render_new_vip_registration(account_id: str) -> None:
             remove_from_blacklist(account_id)
             st.success(f"Account **{account_id}** has been whitelisted. You can now register it as VIP.")
             st.rerun()
-        return  # Stop here — don't show the registration form
+        return  # Halted gracefully to hide input forms block elements below
 
     st.markdown("Would you like to register this account as a new VIP entity?")
 
-    with st.form("quick_vip_register"):
+    with st.form(f"quick_vip_register_{account_id}"):
         q_amt = st.number_input("Initial Amount Limit", min_value=0.0, value=10000.0)
         q_vol = st.number_input("Initial Volume Limit", min_value=1, value=5)
 
-        if st.form_submit_button("Provision New VIP Record"):
+        if st.form_submit_button("Provision New VIP Record", use_container_width=True):
             if not is_valid_account(account_id):
-                st.error("❌ Cannot provision VIP status: Account ID does not exist.")
-                return
-            try:
-                provision_vip(account_id, q_amt, int(q_vol))
-                st.success(f"Account **{account_id}** successfully created as a new VIP profile!")
-                st.rerun()
-            except VIPBlacklistedError as e:
-                # Shouldn't normally reach here because we checked above,
-                # but handled defensively.
-                show_vip_blacklist_blocked_dialog(account_id)
+                st.error("❌ Cannot provision VIP status: Account ID does not exist in system records.")
+            else:
+                try:
+                    provision_vip(account_id, q_amt, int(q_vol))
+                    st.success(f"Account **{account_id}** successfully created as a new VIP profile!")
+                    st.rerun()
+                except VIPBlacklistedError:
+                    # Fallthrough guard handling logic safety condition defensively
+                    show_vip_blacklist_blocked_dialog(account_id)

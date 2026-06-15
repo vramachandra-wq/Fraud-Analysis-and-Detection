@@ -5,6 +5,7 @@ from database.vip_repository import (
     update_vip_limits,
 )
 from database.blacklist_repository import is_blacklisted
+from database.vip_repository import delete_vip_record
 
 
 class VIPBlacklistedError(Exception):
@@ -37,3 +38,8 @@ def provision_vip(account_id: str, amount_limit: float, volume_limit: int) -> No
 
 def modify_vip_limits(account_id: str, amount_limit: float, volume_limit: int) -> None:
     update_vip_limits(account_id, amount_limit, volume_limit)
+
+
+def revoke_vip_status(account_id: str) -> None:
+    """Business logic wrapper to revoke VIP status from an account."""
+    delete_vip_record(account_id)

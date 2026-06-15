@@ -1,1 +1,1 @@
-create database airflow_db;
+CREATE DATABASE airflow_db;

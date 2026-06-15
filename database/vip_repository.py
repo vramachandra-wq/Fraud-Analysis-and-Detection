@@ -13,7 +13,6 @@ def get_vip_details(account_id: str) -> dict | None:
         )
         return cur.fetchone()
 
-
 def get_vip_volume_metrics(account_id: str) -> tuple[int, object]:
     """Return (today_tx_count, last_transaction_time) for a VIP account."""
     today = datetime.date.today()
@@ -76,3 +75,16 @@ def update_vip_limits(account_id: str, amount_limit: float, volume_limit: int) -
             """,
             (amount_limit, int(volume_limit), str(account_id)),
         )
+
+def delete_vip_record(account_id: str) -> None:
+    """Permanently remove an account from the VIP tier."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM lookup.vip_accounts
+                WHERE account_id = %s;
+                """,
+                (str(account_id),),
+            )
+        conn.commit()

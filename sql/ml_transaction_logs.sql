@@ -1,5 +1,3 @@
-CREATE SCHEMA IF NOT EXISTS ml_predictions;
-
 CREATE TABLE IF NOT EXISTS ml_predictions.transaction_logs(
     id SERIAL PRIMARY KEY, 
     account_id VARCHAR(100),
