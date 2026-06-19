@@ -12,9 +12,9 @@ def run_ml_prediction(input_df: pd.DataFrame) -> tuple[float, int, str]:
     raw_prob = model.predict_proba(input_df)[0][1]
     fraud_probability = float(getattr(raw_prob, "item", lambda: raw_prob)())
 
-    prediction = 1 if fraud_probability >= 0.35 else 0
+    prediction = 1 if fraud_probability >= 0.30 else 0
 
-    if fraud_probability < 0.35:
+    if fraud_probability < 0.30:
         risk_cat = "NO_RISK"
     elif fraud_probability < 0.50:
         risk_cat = "LOW_RISK"
