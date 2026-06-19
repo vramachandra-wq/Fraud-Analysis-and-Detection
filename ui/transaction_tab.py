@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
-from database.account_repository import is_valid_account
-from database.blacklist_repository import add_to_blacklist
 from database.transaction_repository import log_transaction
 from ml.prediction_service import run_ml_prediction
 from ai.summarizer import generate_transaction_summary
 from services.fraud_service import process_transaction
 from services.vip_service import provision_vip, VIPBlacklistedError
+from ui.session_state import reset_fraud_results
 from ui.dialogs import (
     show_blacklist_dialog,
     show_whitelist_dialog,
@@ -26,8 +25,8 @@ def render_transaction_tab() -> None:
     # ── 1. INITIALIZE SESSION STATE KEYS (Prevents Silent UI Blanks) ───
     if "show_results" not in st.session_state:
         st.session_state.show_results = False
-    if "device_cooldown_active" not in st.session_state:
-        st.session_state.device_cooldown_active = False
+    if "device_switching_breach" not in st.session_state:
+        st.session_state.device_switching_breach = False
     if "account_cooldown_active" not in st.session_state:
         st.session_state.account_cooldown_active = False
     if "geo_velocity_breach" not in st.session_state:
@@ -55,59 +54,68 @@ def render_transaction_tab() -> None:
     transaction_time = st.time_input("Transaction Time")
     processing_time_ms = st.number_input("Processing Time (ms)", min_value=0, value=500)
 
+    error_container = st.container()
+
     if st.button("Detect Fraud Risk", use_container_width=True):
         if not account_id.strip() or not device_id.strip() or not location_id.strip():
-            st.warning("⚠️ Please Enter Valid Values.")
-            st.stop()
+            reset_fraud_results()
+            with error_container:
+                st.warning("⚠️ Please Enter Valid Values.")
+        else:
+            st.session_state.action_step = "idle"
 
-        if not is_valid_account(account_id):
-            st.error("❌ Invalid account. Transaction cannot be processed.")
-            st.stop()
+            tx = {
+                "account_id": account_id,
+                "device_id": device_id,
+                "location_id": location_id,
+                "transaction_type": transaction_type,
+                "channel": channel,
+                "amount": amount,
+                "currency": currency,
+                "transaction_status": transaction_status,
+                "merchant_category": merchant_category,
+                "transaction_date": str(transaction_date),
+                "transaction_time": str(transaction_time),
+                "processing_time_ms": processing_time_ms,
+            }
 
-        # Reset any stale manual action steps from previous evaluations
-        st.session_state.action_step = "idle"
+            result = process_transaction(tx)
 
-        tx = {
-            "account_id": account_id,
-            "device_id": device_id,
-            "location_id": location_id,
-            "transaction_type": transaction_type,
-            "channel": channel,
-            "amount": amount,
-            "currency": currency,
-            "transaction_status": transaction_status,
-            "merchant_category": merchant_category,
-            "transaction_date": str(transaction_date),
-            "transaction_time": str(transaction_time),
-            "processing_time_ms": processing_time_ms,
-        }
-
-        result = process_transaction(tx)
-
-        st.session_state.saved_account_id = account_id
-        st.session_state.saved_input_df = pd.DataFrame([tx])
-        st.session_state.blacklist_msg = None
-        st.session_state.is_blacklisted = result.get("is_blacklisted", False)
-        st.session_state.fraud_probability = result.get("fraud_probability")
-        st.session_state.prediction = result.get("prediction")
-        st.session_state.risk_cat = result.get("risk_cat")
-        st.session_state.final_transaction_status = result.get("final_transaction_status")
-        st.session_state.ai_summary = result.get("ai_summary")
-        st.session_state.features_dict = result.get("features_dict")
-        st.session_state.vip_breach_type = result.get("vip_breach_type")
-        st.session_state.vip_details = result.get("vip_details")
-        
-        # ── Capture Advanced Velocity & Geo State flags ──────────────────────
-        st.session_state.device_cooldown_active = result.get("device_cooldown_active", False)
-        st.session_state.account_cooldown_active = result.get("account_cooldown_active", False)
-        st.session_state.cooldown_remaining_hours = result.get("cooldown_remaining_hours", 4.0)
-        st.session_state.geo_velocity_breach = result.get("geo_velocity_breach", False)
-        st.session_state.geo_breach_details = result.get("geo_breach_details")
-        
-        # Explicitly declare UI status state for verification actions panel
-        st.session_state.action_step = "idle"
-        st.session_state.show_results = True
-        st.rerun()
+            v_status = result.get("validation_status")
+            if v_status in ["INVALID_ACCOUNT", "INVALID_DEVICE", "INVALID_LOCATION"]:
+                reset_fraud_results()
+                with error_container:
+                    if v_status == "INVALID_ACCOUNT":
+                        st.error("❌ Invalid Account")
+                    elif v_status == "INVALID_DEVICE":
+                        st.error("❌ Invalid Device")
+                    elif v_status == "INVALID_LOCATION":
+                        st.error("❌ Invalid Location")
+            else:
+                st.session_state.saved_account_id = account_id
+                st.session_state.saved_input_df = pd.DataFrame([tx])
+                st.session_state.blacklist_msg = None
+                st.session_state.is_blacklisted = result.get("is_blacklisted", False)
+                st.session_state.fraud_probability = result.get("fraud_probability")
+                st.session_state.prediction = result.get("prediction")
+                st.session_state.risk_cat = result.get("risk_cat")
+                st.session_state.final_transaction_status = result.get("final_transaction_status")
+                st.session_state.ai_summary = result.get("ai_summary")
+                st.session_state.features_dict = result.get("features_dict")
+                st.session_state.vip_breach_type = result.get("vip_breach_type")
+                st.session_state.vip_details = result.get("vip_details")
+                
+                st.session_state.account_cooldown_active = result.get("account_cooldown_active", False)
+                st.session_state.device_switching_breach = result.get("device_switching_breach", False)
+                st.session_state.geo_velocity_breach = result.get("geo_velocity_breach", False)
+                st.session_state.geo_breach_details = result.get("geo_breach_details")
+                
+                # FIXED: Preserve floating-point precision for database cooldowns
+                st.session_state.cooldown_remaining_hours = float(result.get("cooldown_remaining_hours", 2.0))
+                
+                st.session_state.action_step = "idle"
+                st.session_state.show_results = True
+                st.rerun()
 
     # ── Results panel ────────────────────────────────────────────────────────
     if not st.session_state.get("show_results", False):
@@ -121,110 +129,71 @@ def render_transaction_tab() -> None:
     if st.session_state.get("blacklist_msg"):
         st.info(st.session_state.blacklist_msg)
 
-    # CONDITION 1 – Blacklisted account view
     if st.session_state.get("is_blacklisted", False):
+        st.error("🚫 Account Blacklisted")
         _render_blacklisted_view(target_acct, cached_df, tx_details, features_dict)
 
-    # CONDITION 2 – Device Cooldown Rule View (More than 3 transactions/10 min block)
-    elif st.session_state.get("device_cooldown_active", False):
-        _render_device_cooldown_view(st.session_state.cooldown_remaining_hours)
-
-    # CONDITION 3 – Global Account Transaction Volume Limit View
     elif st.session_state.get("account_cooldown_active", False):
         _render_account_cooldown_view(st.session_state.cooldown_remaining_hours)
 
-    # CONDITION 4 – Geospatial Speed Rule View (>100 km within 1 hour)
+    elif st.session_state.get("device_switching_breach", False):
+        _render_device_switching_view()
+
     elif st.session_state.get("geo_velocity_breach", False):
         _render_geo_velocity_view(st.session_state.geo_breach_details)
 
-    # CONDITION 5 – VIP breach view
     elif st.session_state.get("vip_breach_type"):
         _render_vip_breach_view(target_acct, tx_details)
 
-    # CONDITION 6 – Standard ML result view
     else:
         _render_ml_result_view(target_acct, tx_details)
 
 
 # ── Private sub-renderers ──────────────────────────────────────────────────
 
-def _render_device_cooldown_view(remaining_hours: float) -> None:
-    """Displays user warning layout for rapid frequency device velocity violations."""
-    st.error("🚨 Device Limit Enforced")
+def _render_account_cooldown_view(remaining_hours: float) -> None:
+    st.error("🚨 Rapid Transactions Detected")
     st.markdown(
         f"""
-        <div style="
-            background-color:#f8d7da;
-            color:#721c24;
-            padding:14px;
-            border-radius:8px;
-            font-weight:bold;
-            text-align:left;
-            font-size:16px;
-            border: 1px solid #f5c6cb;
-            margin-bottom:15px;">
-            ⚠️ Suspicious Device Activity: This account has triggered more than 3 transactions from this specific device within a 10-minute window.
+        <div style="background-color:#f8d7da; color:#721c24; padding:14px; border-radius:8px; font-weight:bold; border: 1px solid #f5c6cb; margin-bottom:15px;">
+            ⚠️ Rapid transactions detected. Transaction limit reached. Try again after {remaining_hours:.2f} hours.
         </div>
         """,
         unsafe_allow_html=True
     )
-    st.warning(f"⏳ Device locked. Please try again after **{remaining_hours:.1f} hours**.")
     st.metric(label="Fraud Probability Override", value="100.00%")
 
 
-def _render_account_cooldown_view(remaining_hours: float) -> None:
-    """Displays user warning layout for global rolling transaction volume limits."""
-    st.error("🚨 Transaction Limit Reached")
+def _render_device_switching_view() -> None:
+    st.error("🚨 Device Switching Guardrail Tripped")
     st.markdown(
-        f"""
-        <div style="
-            background-color:#f8d7da;
-            color:#721c24;
-            padding:14px;
-            border-radius:8px;
-            font-weight:bold;
-            text-align:left;
-            font-size:16px;
-            border: 1px solid #f5c6cb;
-            margin-bottom:15px;">
-            ⚠️ Transaction Limit Exceeded: This account has triggered more than 3 transactions across all platforms within a 10-minute window.
+        """
+        <div style="background-color:#f8d7da; color:#721c24; padding:14px; border-radius:8px; font-weight:bold; border: 1px solid #f5c6cb; margin-bottom:15px;">
+            ⚠️ Transaction blocked. Device switching detected.
         </div>
         """,
         unsafe_allow_html=True
     )
-    st.warning(f"⏳ Security Cooldown Active. Please try again later after **{remaining_hours:.1f} hours**.")
     st.metric(label="Fraud Probability Override", value="100.00%")
 
 
 def _render_geo_velocity_view(breach_details: dict) -> None:
-    """Displays layout warnings when impossible geographic distance criteria is met."""
-    st.error("🚨 Impossible Travel Signature Flagged")
+    st.error("🚨 Location Velocity Guardrail Tripped")
     st.markdown(
         """
-        <div style="
-            background-color:#f8d7da;
-            color:#721c24;
-            padding:14px;
-            border-radius:8px;
-            font-weight:bold;
-            text-align:left;
-            font-size:16px;
-            border: 1px solid #f5c6cb;
-            margin-bottom:15px;">
-            🔴 Geospatial Velocity Exception: Distance covered exceeds allowed structural thresholds (>100 km covered within 1 hour).
+        <div style="background-color:#f8d7da; color:#721c24; padding:14px; border-radius:8px; font-weight:bold; border: 1px solid #f5c6cb; margin-bottom:15px;">
+            ⚠️ Transaction blocked. Suspicious location velocity detected.
         </div>
         """,
         unsafe_allow_html=True
     )
-    
-    if breach_details:
+    if breach_details and breach_details.get("distance_km") is not None:
         st.info(
-            f"**Calculated Velocity Distance:** {breach_details.get('distance_km'):.2f} km "
-            f"| **Calculated Time Interval:** {breach_details.get('time_delta_mins')} mins"
+            f"**Distance Calculated:** {breach_details.get('distance_km'):.2f} km | "
+            f"**Time Delta:** {breach_details.get('time_delta_mins', 0)} mins"
         )
-        st.text(f"Previous Log Location Reference ID: {breach_details.get('prev_loc_id')}")
-        st.text(f"Current Evaluation Location Reference ID: {breach_details.get('curr_loc_id')}")
-        
+    else:
+        st.info("ℹ️ Distance or velocity analytics details are unavailable for this record configuration.")
     st.metric(label="Fraud Probability Override", value="100.00%")
 
 
@@ -234,9 +203,7 @@ def _render_blacklisted_view(
     tx_details: dict,
     features_dict: dict,
 ) -> None:
-    st.error("🚨 Account Blocked")
     st.metric(label="Fraud Probability", value="100.00%")
-
     if st.button("🔓 Whitelist Account", use_container_width=True):
         from database.blacklist_repository import remove_from_blacklist
         remove_from_blacklist(target_acct)
@@ -268,24 +235,13 @@ def _render_vip_breach_view(target_acct: str, tx_details: dict) -> None:
     v_meta = st.session_state.vip_details
     breach = st.session_state.vip_breach_type
 
-    if breach == "AMOUNT_EXCEEDED":
-        st.warning("⚠️ Transaction amount exceeds configured VIP account limit.")
-        st.info(f"**Configured Limit:** {tx_details.get('currency', '$')} {v_meta['limit_amt']:,} | **Attempted Amount:** {tx_details.get('currency', '$')} {tx_details.get('amount', 0.0):,}")
-    
-    elif breach == "VOLUME_REACHED":
-        st.warning("⚠️ VIP account transaction volume limit has been reached.")
-        st.info(f"**Volume Limit:** {v_meta['limit_vol']} | **Current Window Count:** {v_meta['current_vol']}")
-        
-    elif breach == "DEVICE_VELOCITY_BREACH":
-        st.error("🚨 VIP Exception: High-frequency burst variant tracked on this device (>3 transactions in 10 mins).")
-        st.info("💡 **Policy Check Required:** Review identity logs or request verbal confirmation before forcing an manual bypass.")
-        
-    elif breach == "GEOSPATIAL_VELOCITY_BREACH":
-        st.error(f"🚨 VIP Exception: Impossible Travel Signature detected ({v_meta.get('geo_distance', 0.0):.2f} km covered within {v_meta.get('geo_time_delta', 0)} mins).")
-        st.info("💡 **Policy Check Required:** High risk of account takeover. Confirm if customer is actively utilizing specialized remote access networks.")
+    if breach == "GEOSPATIAL_VELOCITY_BREACH":
+        _render_geo_velocity_view(v_meta)
+    else:
+        st.warning(f"⚠️ VIP Rule Limit Exception Flagged: {breach}")
 
     st.markdown("---")
-    st.subheader("Verification Actions")
+    st.subheader("Verification Actions (VIP Manual Controls Override)")
 
     current_step = st.session_state.get("action_step", "idle")
 
@@ -301,7 +257,7 @@ def _render_vip_breach_view(target_acct: str, tx_details: dict) -> None:
                 st.rerun()
 
     elif current_step == "pending_approve":
-        st.warning("⚠️ **Confirm Force Manual Approval:** Are you sure you want to bypass active VIP restrictions?")
+        st.warning("⚠️ **Confirm Force Manual Approval:** Bypass active VIP velocity block restrictions?")
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Yes", type="primary", use_container_width=True):
@@ -359,57 +315,12 @@ def _render_ml_result_view(target_acct: str, tx_details: dict) -> None:
 
     st.metric(label="Fraud Probability", value=f"{prob:.2%}")
 
-    # Risk Category Display
     if risk_cat == "NO_RISK":
-        st.markdown(
-            """
-            <div style="
-                background-color:#d4edda;
-                color:#155724;
-                padding:12px;
-                border-radius:8px;
-                font-weight:bold;
-                text-align:center;
-                font-size:18px;">
-                🟢 Risk Category: NO_RISK
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
+        st.markdown('<div style="background-color:#d4edda; color:#155724; padding:12px; border-radius:8px; font-weight:bold; text-align:center; font-size:18px;">🟢 Risk Category: NO_RISK</div>', unsafe_allow_html=True)
     elif risk_cat in ["LOW_RISK", "MEDIUM_RISK"]:
-        st.markdown(
-            f"""
-            <div style="
-                background-color:#fff3cd;
-                color:#856404;
-                padding:12px;
-                border-radius:8px;
-                font-weight:bold;
-                text-align:center;
-                font-size:18px;">
-                🟡 Risk Category: {risk_cat}
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
+        st.markdown(f'<div style="background-color:#fff3cd; color:#856404; padding:12px; border-radius:8px; font-weight:bold; text-align:center; font-size:18px;">🟡 Risk Category: {risk_cat}</div>', unsafe_allow_html=True)
     elif risk_cat == "HIGH_RISK":
-        st.markdown(
-            """
-            <div style="
-                background-color:#f8d7da;
-                color:#721c24;
-                padding:12px;
-                border-radius:8px;
-                font-weight:bold;
-                text-align:center;
-                font-size:18px;">
-                🔴 Risk Category: HIGH_RISK
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        st.markdown('<div style="background-color:#f8d7da; color:#721c24; padding:12px; border-radius:8px; font-weight:bold; text-align:center; font-size:18px;">🔴 Risk Category: HIGH_RISK</div>', unsafe_allow_html=True)
 
     if st.session_state.ai_summary:
         st.markdown("### AI Summary")
@@ -419,6 +330,7 @@ def _render_ml_result_view(target_acct: str, tx_details: dict) -> None:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🚫 Blacklist Account", use_container_width=True):
+            from database.blacklist_repository import add_to_blacklist
             add_to_blacklist(target_acct)
             show_blacklist_dialog(target_acct)
     with col2:
@@ -430,7 +342,6 @@ def _render_ml_result_view(target_acct: str, tx_details: dict) -> None:
 
 
 def _render_inline_vip_form(target_acct: str) -> None:
-    """Inline VIP provisioning form with blacklist guard."""
     with st.form("vip_creation_form"):
         lim_amt = st.number_input("Transaction Amount Limit", min_value=100.0, value=50000.0)
         lim_vol = st.number_input("Transaction Volume Limit", min_value=1, value=10)
@@ -443,8 +354,3 @@ def _render_inline_vip_form(target_acct: str) -> None:
             except VIPBlacklistedError:
                 st.session_state.display_vip_form = False
                 show_vip_blacklist_blocked_dialog(target_acct)
-
-    # After whitelisting inside the dialog, re-open VIP form automatically
-    if st.session_state.pop("_pending_vip_after_whitelist", False):
-        st.session_state.display_vip_form = True
-        st.rerun()

@@ -93,15 +93,16 @@ def get_recent_account_tx_count(account_id: str, lookback_time: datetime) -> int
 
 def get_last_transaction_location(account_id: str, lookback_time: datetime) -> dict:
     """
-    Retrieves the most recent transaction location context for an account,
-    joining against curated.dim_location to extract spatial metrics.
+    Retrieves the most recent transaction context for an account,
+    including the device and joining against curated.dim_location to extract spatial metrics.
     """
     query = """
         SELECT 
             t.location_id,
             (t.transaction_date || ' ' || t.transaction_time)::timestamp AS tx_timestamp,
             l.latitude,
-            l.longitude
+            l.longitude,
+            t.device_id
         FROM ml_predictions.transaction_logs t
         LEFT JOIN curated.dim_location l ON t.location_id = l.location_id
         WHERE t.account_id = %s
@@ -118,14 +119,15 @@ def get_last_transaction_location(account_id: str, lookback_time: datetime) -> d
                     "location_id": row[0],
                     "timestamp": row[1],
                     "latitude": row[2],
-                    "longitude": row[3]
+                    "longitude": row[3],
+                    "device_id": row[4]
                 }
     return None
 
 
 def get_location_coordinates(location_id: str) -> dict:
     """
-    Fetches the spatial coordinates for the current target location.
+    Fetches the spatial coordinates for the current target location from master schema.
     """
     query = "SELECT latitude, longitude FROM curated.dim_location WHERE location_id = %s;"
     with get_db_connection() as conn:
@@ -134,4 +136,63 @@ def get_location_coordinates(location_id: str) -> dict:
             row = cur.fetchone()
             if row:
                 return {"latitude": row[0], "longitude": row[1]}
+    return None
+
+
+def verify_device_exists(device_id: str) -> bool:
+    """Validates if a device entry exists inside master data schema table."""
+    if not device_id or not device_id.strip():
+        return False
+    query = "SELECT 1 FROM curated.dim_device WHERE device_id = %s LIMIT 1;"
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (device_id.strip(),))
+                return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def verify_location_exists(location_id: str) -> bool:
+    """Validates if a location entry exists inside master data schema table."""
+    if not location_id or not location_id.strip():
+        return False
+    query = "SELECT 1 FROM curated.dim_location WHERE location_id = %s LIMIT 1;"
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (location_id.strip(),))
+                return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def check_active_cooldown(account_id: str, current_time: datetime) -> dict | None:
+    """
+    IMPLEMENTED: Looks back into the ledger logs to find if the user triggered 
+    a rapid transaction rule limit breach within the last 2 hours.
+    """
+    query = """
+        SELECT (transaction_date || ' ' || transaction_time)::timestamp AS breach_time
+        FROM ml_predictions.transaction_logs
+        WHERE account_id = %s 
+          AND fraud_source = 'RAPID_TRANSACTION_RULE'
+          AND transaction_status = 'FAILED'
+        ORDER BY breach_time DESC
+        LIMIT 1;
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, (account_id,))
+                row = cur.fetchone()
+                if row:
+                    last_breach = row[0]
+                    elapsed_seconds = (current_time - last_breach).total_seconds()
+                    # 2 hours cooldown check (7200 seconds)
+                    if elapsed_seconds < 7200:
+                        remaining_hours = (7200 - elapsed_seconds) / 3600.0
+                        return {"remaining_hours": remaining_hours}
+    except Exception:
+        return None
     return None

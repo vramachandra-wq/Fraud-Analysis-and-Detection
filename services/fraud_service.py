@@ -6,21 +6,22 @@ from database.blacklist_repository import is_blacklisted
 from database.vip_repository import get_vip_details, get_vip_volume_metrics
 from database.transaction_repository import (
     log_transaction,
-    get_recent_device_tx_count,
     get_recent_account_tx_count,
     get_last_transaction_location,
-    get_location_coordinates
+    get_location_coordinates,
+    verify_device_exists,
+    verify_location_exists,
+    check_active_cooldown  # IMPORTED: Active database lookback verification method
 )
 from ml.prediction_service import run_ml_prediction, extract_engineered_features
 from ai.summarizer import generate_transaction_summary
 
+
 def calculate_haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculates great-circle distance in kilometers between two coordinate sets."""
-    R = 6371.0  # Earth's radius in km
-    
+    R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    
     a = (math.sin(dlat / 2) ** 2 + 
          math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
@@ -30,13 +31,46 @@ def calculate_haversine_distance(lat1: float, lon1: float, lat2: float, lon2: fl
 def process_transaction(tx: dict) -> dict:
     """
     Full integrated fraud-detection pipeline for a single transaction.
+    Enforces master validations, active historical cooldowns, blacklists, and velocity rules.
     """
     account_id = tx["account_id"]
     device_id = tx["device_id"]
     location_id = tx["location_id"]
     
-    # Standardize time parsing for rule evaluations
+    # ── STEP 0: MASTER DATA VALIDATION ──────────────────────────────────────
+    if not is_valid_account(account_id):
+        return {"validation_status": "INVALID_ACCOUNT"}
+        
+    if not verify_device_exists(device_id):
+        return {"validation_status": "INVALID_DEVICE"}
+        
+    if not verify_location_exists(location_id):
+        return {"validation_status": "INVALID_LOCATION"}
+
     current_tx_time = datetime.strptime(f"{tx['transaction_date']} {tx['transaction_time']}", "%Y-%m-%d %H:%M:%S")
+
+    # Gather VIP status up front to evaluate conditional bypass rules
+    vip_rules = get_vip_details(account_id)
+    is_vip = vip_rules is not None
+
+    # ── STEP 0.5: ACTIVE COOLDOWN ENFORCEMENT ────────────────────────────────
+    # Enforces hard lock out if a non-VIP triggered a rapid rule limitation recently
+    if not is_vip:
+        active_lockout = check_active_cooldown(account_id, current_tx_time)
+        if active_lockout:
+            ai_summary = f"Blocked by active cooldown infrastructure safety layer. Lockout expires in {active_lockout['remaining_hours']:.2f} hours."
+            return {
+                "source": "RAPID_TRANSACTION_RULE",
+                "account_cooldown_active": True,
+                "cooldown_remaining_hours": active_lockout["remaining_hours"],
+                "fraud_probability": 1.0,
+                "prediction": 1,
+                "risk_cat": "HIGH_RISK",
+                "final_transaction_status": "FAILED",
+                "ai_summary": ai_summary,
+                "is_blacklisted": False,
+                "validation_status": "VALID",
+            }
 
     # Extract ML features up front
     input_df = pd.DataFrame([tx])
@@ -61,12 +95,10 @@ def process_transaction(tx: dict) -> dict:
             "ai_summary": ai_summary,
             "is_blacklisted": True,
             "features_dict": features_dict,
+            "validation_status": "VALID",
         }
 
-    # Gather VIP status up front to evaluate threshold exceptions
-    vip_rules = get_vip_details(account_id)
-    is_vip = vip_rules is not None
-
+    vip_details = None
     if is_vip:
         amt_limit = float(vip_rules["amount_per_transaction_limit"])
         vol_limit = int(vip_rules["transactions_limit"])
@@ -81,77 +113,25 @@ def process_transaction(tx: dict) -> dict:
             "last_ts": str(last_ts),
         }
 
-        # Catch structural standard VIP limits first
-        if tx["amount"] > amt_limit:
-            return {
-                "source": "VIP_BREACH",
-                "is_blacklisted": False,
-                "vip_breach_type": "AMOUNT_EXCEEDED",
-                "vip_details": vip_details,
-                "features_dict": features_dict,
-            }
-
-        if current_vol >= vol_limit:
-            return {
-                "source": "VIP_BREACH",
-                "is_blacklisted": False,
-                "vip_breach_type": "VOLUME_REACHED",
-                "vip_details": vip_details,
-                "features_dict": features_dict,
-            }
-
-    # ── STEP 2: VELOCITY & GEOSPATIAL RUNS ──────────────────────────────────
-    ten_mins_ago = current_tx_time - timedelta(minutes=10)
+    # ── STEP 2: FRAUD AND VELOCITY RULES RUNS ──────────────────────────────────
     
-    # 2a. Device Burst Check (Max 3 tx per 10 mins from same device)
-    recent_device_count = get_recent_device_tx_count(account_id, device_id, ten_mins_ago)
-    if recent_device_count >= 3:
-        if is_vip:
-            return {
-                "source": "VIP_BREACH",
-                "is_blacklisted": False,
-                "vip_breach_type": "DEVICE_VELOCITY_BREACH",
-                "vip_details": vip_details,
-                "features_dict": features_dict,
-            }
-        
-        ai_summary = "Transaction auto-rejected due to high device frequency limits (>3 transactions in 10 mins from same device)."
-        log_transaction((
-            account_id, device_id, location_id, tx["transaction_type"],
-            tx["channel"], tx["amount"], tx["currency"], "FAILED",
-            tx["merchant_category"], str(tx["transaction_date"]),
-            str(tx["transaction_time"]), tx["processing_time_ms"],
-            1.0, 1, "HIGH_RISK", False, "DEVICE_VELOCITY_RULE", ai_summary,
-        ))
-        return {
-            "source": "DEVICE_VELOCITY_RULE",
-            "device_cooldown_active": True,
-            "cooldown_remaining_hours": 4.0,
-            "fraud_probability": 1.0,
-            "prediction": 1,
-            "risk_cat": "HIGH_RISK",
-            "final_transaction_status": "FAILED",
-            "ai_summary": ai_summary,
-            "is_blacklisted": False,
-            "features_dict": features_dict,
-        }
-
-    # 2b. Global Account Volume Limit Check (Ignored completely for VIPs)
+    # 2a. Rapid Transactions Rule (Rolling 2 minutes, max 3 tx. Block 4th) - BYPASSED FOR VIPs
     if not is_vip:
-        recent_account_count = get_recent_account_tx_count(account_id, ten_mins_ago)
+        two_mins_ago = current_tx_time - timedelta(minutes=2)
+        recent_account_count = get_recent_account_tx_count(account_id, two_mins_ago)
         if recent_account_count >= 3:
-            ai_summary = "Standard account volume threshold exceeded. 4-hour cooldown active."
+            ai_summary = "Rapid transactions detected. Transaction limit reached. Try again after 2 hours."
             log_transaction((
                 account_id, device_id, location_id, tx["transaction_type"],
                 tx["channel"], tx["amount"], tx["currency"], "FAILED",
                 tx["merchant_category"], str(tx["transaction_date"]),
                 str(tx["transaction_time"]), tx["processing_time_ms"],
-                1.0, 1, "HIGH_RISK", False, "ACCOUNT_VOLUME_RULE", ai_summary,
+                1.0, 1, "HIGH_RISK", False, "RAPID_TRANSACTION_RULE", ai_summary,
             ))
             return {
-                "source": "ACCOUNT_VOLUME_RULE",
-                "account_cooldown_active": True,  # FIXED: Now flags account_cooldown_active correctly
-                "cooldown_remaining_hours": 4.0,
+                "source": "RAPID_TRANSACTION_RULE",
+                "account_cooldown_active": True,
+                "cooldown_remaining_hours": 2.0,
                 "fraud_probability": 1.0,
                 "prediction": 1,
                 "risk_cat": "HIGH_RISK",
@@ -159,12 +139,39 @@ def process_transaction(tx: dict) -> dict:
                 "ai_summary": ai_summary,
                 "is_blacklisted": False,
                 "features_dict": features_dict,
+                "validation_status": "VALID",
             }
 
-    # 2c. Geospatial Travel Limit Check
+    # 2b. Device Switching Fraud Rule (Diff device within <= 5 mins) - BYPASSED FOR VIPs
     one_hour_ago = current_tx_time - timedelta(hours=1)
     last_tx = get_last_transaction_location(account_id, one_hour_ago)
-    
+
+    if not is_vip and last_tx:
+        if last_tx.get("device_id") != device_id:
+            time_delta_sec = (current_tx_time - last_tx["timestamp"]).total_seconds()
+            if time_delta_sec <= 300.0:  # 5 minutes
+                ai_summary = "Transaction blocked. Device switching detected."
+                log_transaction((
+                    account_id, device_id, location_id, tx["transaction_type"],
+                    tx["channel"], tx["amount"], tx["currency"], "FAILED",
+                    tx["merchant_category"], str(tx["transaction_date"]),
+                    str(tx["transaction_time"]), tx["processing_time_ms"],
+                    1.0, 1, "HIGH_RISK", False, "DEVICE_SWITCHING_RULE", ai_summary,
+                ))
+                return {
+                    "source": "DEVICE_SWITCHING_RULE",
+                    "device_switching_breach": True,
+                    "fraud_probability": 1.0,
+                    "prediction": 1,
+                    "risk_cat": "HIGH_RISK",
+                    "final_transaction_status": "FAILED",
+                    "ai_summary": ai_summary,
+                    "is_blacklisted": False,
+                    "features_dict": features_dict,
+                    "validation_status": "VALID",
+                }
+
+    # 2c. Geospatial Travel Limit Velocity Rule (>100 KM within <= 1 Hour) - ENFORCED FOR ALL (VIP + NON-VIP)
     if last_tx and last_tx["latitude"] is not None and last_tx["longitude"] is not None:
         curr_coords = get_location_coordinates(location_id)
         if curr_coords and curr_coords["latitude"] is not None and curr_coords["longitude"] is not None:
@@ -172,21 +179,22 @@ def process_transaction(tx: dict) -> dict:
                 last_tx["latitude"], last_tx["longitude"],
                 curr_coords["latitude"], curr_coords["longitude"]
             )
-            if distance > 100.0:
-                time_delta_mins = (current_tx_time - last_tx["timestamp"]).total_seconds() / 60.0
-                
+            time_delta_mins = (current_tx_time - last_tx["timestamp"]).total_seconds() / 60.0
+            
+            if distance > 100.0 and time_delta_mins <= 60.0:
                 if is_vip:
-                    vip_details["geo_distance"] = distance
-                    vip_details["geo_time_delta"] = int(time_delta_mins)
+                    vip_details["distance_km"] = distance
+                    vip_details["time_delta_mins"] = int(time_delta_mins)
                     return {
                         "source": "VIP_BREACH",
                         "is_blacklisted": False,
                         "vip_breach_type": "GEOSPATIAL_VELOCITY_BREACH",
                         "vip_details": vip_details,
                         "features_dict": features_dict,
+                        "validation_status": "VALID",
                     }
                 
-                ai_summary = f"Geospatial Velocity Breach: {distance:.2f} km covered within {int(time_delta_mins)} minutes."
+                ai_summary = "Transaction blocked. Suspicious location velocity detected."
                 log_transaction((
                     account_id, device_id, location_id, tx["transaction_type"],
                     tx["channel"], tx["amount"], tx["currency"], "FAILED",
@@ -210,6 +218,7 @@ def process_transaction(tx: dict) -> dict:
                     "ai_summary": ai_summary,
                     "is_blacklisted": False,
                     "features_dict": features_dict,
+                    "validation_status": "VALID",
                 }
 
     # ── STEP 3: CLEAN VIP PASSTHROUGH ───────────────────────────────────────
@@ -232,6 +241,7 @@ def process_transaction(tx: dict) -> dict:
             "is_blacklisted": False,
             "vip_details": vip_details,
             "features_dict": features_dict,
+            "validation_status": "VALID",
         }
 
     # ── STEP 4: STANDARD ML PATH (Standard Accounts Only) ───────────────────
@@ -255,4 +265,5 @@ def process_transaction(tx: dict) -> dict:
         "ai_summary": ai_summary,
         "is_blacklisted": False,
         "features_dict": features_dict,
+        "validation_status": "VALID",
     }

@@ -19,6 +19,9 @@ _FRAUD_STATES = [
     "saved_account_id",
     "action_step",
     "display_vip_form",
+    "device_switching_breach",
+    "geo_velocity_breach",
+    "account_cooldown_active"
 ]
 
 _BOOL_STATES = {
@@ -26,7 +29,10 @@ _BOOL_STATES = {
     "trigger_blacklist_popup",
     "trigger_whitelist_popup",
     "is_blacklisted",
-    "authenticated",  # Added authenticated to the boolean tracking set
+    "authenticated",
+    "device_switching_breach",
+    "geo_velocity_breach",
+    "account_cooldown_active"
 }
 
 
@@ -58,7 +64,8 @@ def reset_fraud_results() -> None:
         "show_results", "blacklist_msg", "saved_input_df", "ai_summary",
         "vip_breach_type", "vip_details", "features_dict", "is_blacklisted",
         "fraud_probability", "prediction", "risk_cat", "final_transaction_status",
-        "saved_account_id", "action_step",
+        "saved_account_id", "action_step", "device_switching_breach",
+        "geo_velocity_breach", "account_cooldown_active"
     ]
     for key in keys_to_clear:
         st.session_state[key] = False if key in _BOOL_STATES else None
