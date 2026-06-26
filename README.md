@@ -339,7 +339,9 @@ GROQ_API_KEY = "your-groq-api-key"
 ```
 
 ## 11. Run Rules Based Fraud Detection Function
-Run `rules_engine_fraud_dashboard.sql`
+This step takes appromimately 8-10 mins.  
+
+Run `rules_engine_fraud_dashboard.sql` inside `pgadmin`
 
 ## 12. Launch Apache Superset
 
