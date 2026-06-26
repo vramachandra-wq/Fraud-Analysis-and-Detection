@@ -19,36 +19,122 @@ The platform provides:
 # Project Structure
 
 ```text
-project/
-├── app.py                          ← Entry point (3 tabs)
-├── config/
-│   └── settings.py                 ← DB credentials, model path, Groq config
-├── database/
-│   ├── connection.py               ← Database connection pool
-│   ├── account_repository.py       ← Account validation
-│   ├── blacklist_repository.py     ← Blacklist operations
-│   ├── vip_repository.py           ← VIP operations
-│   └── transaction_repository.py   ← Transaction logging
-├── ml/
-│   └── models/
-│   ├── feature_engineering.py  ← FraudFeatureEngineer
-│   ├── model_loader.py         ← Cached model loader
-│   └── prediction_service.py   ← ML prediction service
+FRAUD-ANALYSIS-AND-DETECTION/
+│
+├── .streamlit/
+│   └── secrets.toml                        ← Streamlit secrets and credentials
+│
+├── .venv/                                  ← Python virtual environment
+│
 ├── ai/
-│   ├── groq_client.py              ← Groq client initialization
-│   └── summarizer.py               ← AI transaction summaries
+│   ├── chatbot/
+│   │   ├── components.py                   ← Chatbot UI components
+│   │   ├── config.py                       ← Chatbot configuration
+│   │   └── pipeline.py                     ← Chatbot processing pipeline
+│   │
+│   ├── __init__.py                         ← AI package initialization
+│   ├── groq_client.py                      ← Groq LLM client setup
+│   └── summarizer.py                       ← Transaction summarization logic
+│
+├── airflow/
+│   ├── config/                             ← Airflow configuration files
+│   ├── dags/                               ← Airflow workflows and jobs
+│   └── plugins/                            ← Custom Airflow plugins
+│
+├── auth/
+│   ├── db.py                               ← Authentication database operations
+│   └── users.py                            ← User authentication logic
+│
+├── banking_data/
+│   └── lookup_data/                        ← Source lookup datasets
+│
+├── config/
+│   ├── __init__.py                         ← Configuration package
+│   └── settings.py                         ← Application settings
+│
+├── database/
+│   ├── __init__.py                         ← Database package
+│   ├── account_repository.py               ← Account database operations
+│   ├── blacklist_repository.py             ← Blacklist database operations
+│   ├── connection.py                       ← Database connection manager
+│   ├── transaction_repository.py           ← Transaction database operations
+│   └── vip_repository.py                   ← VIP database operations
+│
+├── fastapi_service/
+│   ├── fastapi_cdc.log                     ← CDC service logs
+│   ├── initial_load.log                    ← Initial load logs
+│   ├── initial_load.py                     ← Initial data loading script
+│   ├── main.py                             ← FastAPI application entry point
+│   └── reload_transactions.py              ← Transaction reload utility
+│
+├── lookup_tables_scripts/
+│   ├── blacklisted_accounts.py             ← Generate blacklist accounts
+│   ├── valid_accounts.py                   ← Generate valid accounts
+│   └── vip_accounts.py                     ← Generate VIP accounts
+│
+├── ml/
+│   ├── images/                             ← Model images and plots
+│   ├── models/                             ← Saved ML models
+│   ├── __init__.py                         ← ML package
+│   ├── feature_engineering.py              ← Feature creation logic
+│   ├── model_loader.py                     ← Load trained models
+│   ├── prediction_service.py               ← Fraud prediction service
+│   └── xgboost_training.py                 ← XGBoost model training
+│
 ├── services/
-│   ├── fraud_service.py            ← Fraud detection pipeline
-│   ├── vip_service.py              ← VIP provisioning
-│   └── blacklist_service.py        ← Blacklist operations
+│   ├── __init__.py                         ← Services package
+│   ├── blacklist_service.py                ← Blacklist business logic
+│   ├── fraud_service.py                    ← Fraud detection logic
+│   └── vip_service.py                      ← VIP account business logic
+│
+├── sql/
+│   ├── schema_setup/
+│   │   ├── olap/
+│   │   │   ├── aggregated.sql              ← Aggregated layer schema
+│   │   │   ├── curated.sql                 ← Curated layer schema
+│   │   │   ├── landing.sql                 ← Landing layer schema
+│   │   │   └── logging.sql                 ← Logging schema
+│   │   │
+│   │   └── oltp/
+│   │       └── ddl.sql                     ← Transactional schema DDL
+│   │
+│   ├── ai_chatbot_logs.sql                 ← Chatbot logging tables
+│   ├── create_olap_airflow_db.sql          ← OLAP and Airflow DB setup
+│   ├── lookup_table_schema_creation.sql    ← Lookup table creation
+│   ├── ml_transaction_logs.sql             ← ML prediction logs
+│   ├── rules_based_fraud_dashboard.sql     ← Dashboard queries
+│   ├── rules_engine_function.sql           ← Fraud rule engine functions
+│   ├── user_credentials_creation.sql       ← User credentials tables
+│   └── user_sessions_table_creation.sql    ← Session tracking tables
+│
+├── superset_dashboards/
+│   ├── dashboard_export_20260525T051749.zip ← Dashboard export
+│   ├── dashboard_export_20260525T051825.zip ← Dashboard export
+│   ├── dashboard_export_20260525T051832.zip ← Dashboard export
+│   └── dashboard_export_20260611T131022.zip ← Dashboard export
+│
 ├── ui/
-│   ├── session_state.py            ← Streamlit session state
-│   ├── dialogs.py                  ← Dialog popups
-│   ├── transaction_tab.py          ← Fraud Detection tab
-│   ├── vip_management_tab.py       ← VIP Management tab
-│   └── chatbot_tab.py              ← AI Chatbot tab
-└── utils/
-    └── constants.py                ← Application constants
+│   ├── __init__.py                         ← UI package
+│   ├── admin_control_panel.py              ← Admin dashboard
+│   ├── session_state.py                    ← Streamlit session state
+│   ├── dialogs.py                          ← Dialog popups
+│   ├── transaction_tab.py                  ← Fraud Detection tab
+│   ├── vip_management_tab.py               ← VIP Management tab
+│   └── chatbot_tab.py                      ← AI Chatbot tab
+│
+├── utils/
+│   ├── __init__.py                         ← Utility package
+│   └── constants.py                        ← Application constants
+│
+├── .gitattributes                          ← Git file handling rules
+├── .gitignore                              ← Ignored files and folders
+├── app.py                                  ← Main Streamlit application
+├── connector.json                          ← Debezium Connector configuration
+├── initial_load.log                        ← Initial Data Load logs
+├── podman-compose.yml                      ← Container orchestration
+├── README.md                               ← Project documentation
+├── requirements.txt                        ← Python dependencies
+└── setup.py                                ← Initial Setup script
 ```
 
 ---
@@ -199,7 +285,7 @@ olap_postgres
 
 ## 8. Run the Airflow Pipeline
 
-Start Airflow and trigger the fraud detection DAG.
+Start Airflow and trigger the fraud detection DAG. If the first run fails, re run the pipeline.
 
 ### Airflow Credentials
 
@@ -221,10 +307,15 @@ Execute:
 python xgboost_training.py
 ```
 
-The trained model will be generated in:
+The trained model will be stored in:
 
 ```text
 ml/models/
+```
+The trained model plots and graphs will be stored in:
+
+```text
+ml/images/
 ```
 
 ## 10. Configure Groq API Key
@@ -277,7 +368,7 @@ While importing:
 python -m streamlit run app.py
 ```
 
-The application will launch locally in your browser.
+The application will launch locally in your browser on `localhost:8051`.
 
 ---
 
@@ -325,9 +416,16 @@ Allows users to:
 
 * Query fraud data
 * Understand model outputs
-* Explore transaction insights
+* Explore transaction insights using natural language.
 
-using natural language.
+## Administrative Control Panel
+
+Provides administrative capabilities including:
+
+* User management
+* Session management
+* Administrative controls
+* User access management
 
 ---
 
@@ -389,9 +487,3 @@ python -m streamlit run app.py
 ```
 
 ---
-
-# Author
-
-Real Time Banking Fraud Detection Platform
-
-Built using PostgreSQL, Airflow, XGBoost, Groq, Streamlit, and Superset.
