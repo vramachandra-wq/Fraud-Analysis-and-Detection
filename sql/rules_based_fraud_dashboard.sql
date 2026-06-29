@@ -230,6 +230,7 @@ SELECT
     annual_income,
     merchant_category,
     customer_id,
+    occupation,
     transaction_status,
     bank_name,
     customer_age,
