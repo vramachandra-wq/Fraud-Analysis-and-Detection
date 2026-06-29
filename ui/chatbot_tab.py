@@ -1,617 +1,57 @@
-"""
-Analytics AI Chatbot — Tab 3.
-
-Provides a natural-language interface to the curated data warehouse schema
-via Groq-powered SQL generation and NL summarisation.
-
-Structure:
-  1. Constants & config      — schema context, system prompts, guard-lists
-  2. SQL pipeline helpers    — _extract_sql, _validate_sql, _repair_sql
-  3. Rendering helpers       — _render_chart
-  4. Core pipeline           — _run_query_pipeline
-  5. Public entry-point      — render_chatbot_tab
-"""
-
 from __future__ import annotations
-
-import re
-import pandas as pd
-import psycopg2
 import streamlit as st
+from ai.chatbot.pipeline import render_assistant_turn, run_query_pipeline, load_user_chat_history
+from config.settings import GROQ_API_KEY, GROQ_SQL_MODEL, GROQ_SUMMARY_MODEL
 
-from ai.groq_client import get_groq_client
-from config.settings import (
-    GROQ_API_KEY,
-    GROQ_REPAIR_MODEL,
-    GROQ_SQL_MODEL,
-    GROQ_SUMMARY_MODEL,
-)
-from database.connection import get_pooled_connection, release_pooled_connection
-from database.transaction_repository import log_chatbot_interaction
-
-
-# ── 1. Constants & Config ──────────────────────────────────────────────────
-
-SCHEMA_CONTEXT = """
-Schema: curated
-Tables:
-1. curated.dim_customer (SCD Type 2)
-   - dim_customer_sk (BIGSERIAL, PK), customer_id (VARCHAR, Business Key), full_name,
-     email, phone, date_of_birth, gender, nationality, city, state, country, occupation,
-     credit_score, annual_income, is_active, is_current (BOOLEAN)
-2. curated.dim_account (SCD Type 2)
-   - dim_account_sk (BIGSERIAL, PK), account_id (VARCHAR, Business Key), customer_id,
-     account_number, account_type, account_status, bank_name, currency, balance,
-     credit_limit, is_current (BOOLEAN)
-3. curated.dim_device (SCD Type 2)
-   - dim_device_sk (BIGSERIAL, PK), device_id (VARCHAR, Business Key), customer_id,
-     device_type, operating_system, browser, ip_address, is_trusted, is_current (BOOLEAN)
-4. curated.dim_location (SCD Type 2)
-   - dim_location_sk (BIGSERIAL, PK), location_id (VARCHAR, Business Key), merchant_name,
-     merchant_category, city, state, country, latitude, longitude,
-     is_high_risk_area, is_current (BOOLEAN)
-5. curated.fact_transactions (Fact Table)
-   - transaction_id (VARCHAR, PK), account_id, customer_id, device_id, location_id,
-     transaction_type, channel, amount (NUMERIC), currency, transaction_status,
-     is_fraud (BOOLEAN), fraud_reason, transaction_date (DATE), transaction_time (TIME),
-     processing_time_ms (INTEGER)
-"""
-
-SQL_SYSTEM_PROMPT = f"""
-You are an expert data analyst converting user questions into precise PostgreSQL queries.
-Given the database schema below, write a SQL query that answers the user's request.
-
-{SCHEMA_CONTEXT}
-
-CRITICAL SCD TYPE 2 INSTRUCTIONS:
-- Unless explicitly asked otherwise, ALWAYS filter dimension tables with `is_current = true`.
-  Apply the filter as part of the JOIN condition, e.g.:
-  JOIN curated.dim_location dl ON ft.location_id = dl.location_id AND dl.is_current = true
-- JOIN the fact table to dimensions using Business Keys (e.g., `ft.location_id = dl.location_id`),
-  NOT surrogate keys (_sk).
-
-STRICT JOIN RULES — VIOLATIONS WILL BREAK THE QUERY:
-- Each dimension table (dim_customer, dim_account, dim_device, dim_location) must appear AT MOST
-  ONCE in the FROM/JOIN clause. Never join the same table to itself.
-- Only join a dimension table if you actually need a column from it in SELECT, WHERE, or GROUP BY.
-- The fact table (fact_transactions) is the only driving table. All joins flow FROM it TO dimensions.
-- Never chain dimension-to-dimension joins. A dimension must always join directly to fact_transactions.
-- POSTGRES COMPLIANCE: Any column in the SELECT clause that is not part of an aggregate function
-  MUST be included in the GROUP BY clause exactly as specified.
-
-TIME-SERIES EXTRACTION RULES:
-- When grouping by parts of a date (e.g., month, year), use standard PostgreSQL extraction
-  functions like `EXTRACT(MONTH FROM ft.transaction_date)` or
-  `DATE_TRUNC('month', ft.transaction_date)`.
-
-CRITICAL EXAMPLES:
-BAD:
-JOIN curated.dim_device dd ON ft.device_id = dd.device_id
-JOIN curated.dim_device dtd ON ft.device_id = dtd.device_id
-
-GOOD:
-JOIN curated.dim_device dd ON ft.device_id = dd.device_id
-
-Use aliases everywhere in: SELECT, WHERE, GROUP BY, ORDER BY.
-
-QUERY COMPLEXITY RULES:
-- Use the minimum number of tables necessary to answer the question.
-- If the answer can be derived entirely from fact_transactions columns, do not join any dimension.
-
-ONE-SHOT EXAMPLE:
-Question: "What is the total transaction amount by merchant category?"
-Correct SQL:
-```sql
-SELECT
-    dl.merchant_category,
-    SUM(ft.amount) AS total_transaction_amount
-FROM curated.fact_transactions ft
-JOIN curated.dim_location dl
-    ON ft.location_id = dl.location_id
-   AND dl.is_current = true
-GROUP BY dl.merchant_category
-ORDER BY total_transaction_amount DESC;
-```
-STRICT ALIASING RULES:
-- Use clear, distinct aliases everywhere in: SELECT, WHERE, GROUP BY, ORDER BY.
-- NEVER use PostgreSQL reserved keywords or system words as aliases (e.g., do NOT use 'to', 'from', 'user', 'date', 'order' as table or column aliases). 
-- If a table name would abbreviate to a keyword, append a generic descriptor or index instead (e.g., use 't_occ' or 'occs' instead of 'to').
-
-OUTPUT_GUIDELINES:
-Respond ONLY with the executable SQL query inside a markdown code block (```sql ... ```).
-Do not include any text, explanation, or commentary outside the code block.
-DO NOT include any SQL comments (using -- or /* */) inside the code block.
-"""
-
-_KNOWN_DIMENSION_TABLES: list[str] = [
-    "dim_customer",
-    "dim_account",
-    "dim_device",
-    "dim_location",
-]
-
-_BLOCKED_KEYWORDS: list[str] = [
-    "drop", "delete", "update", "insert", "truncate",
-    "alter", "create", "grant", "revoke",
-]
-
-
-# ── 2. SQL Pipeline Helpers ────────────────────────────────────────────────
-
-def _extract_sql(text: str) -> str:
-    """Pull the raw SQL string out of a markdown code block."""
-    match = re.search(r"```sql\s+(.*?)\s+```", text, re.DOTALL | re.IGNORECASE)
-    return match.group(1).strip() if match else text.strip()
-
-
-def _validate_sql(sql: str) -> tuple[bool, str]:
-    """
-    Run lightweight structural checks before executing against the database.
-    Strips comments and literal string values to avoid false-positive keyword blocks.
-    """
-    # 1. Clean up formatting and lowercase
-    sql_clean = sql.strip()
-    
-    # 2. Strip single-line comments (-- comment)
-    sql_clean = re.sub(r"--.*?\n", "\n", sql_clean)
-    
-    # 3. Strip multi-line comments (/* comment */)
-    sql_clean = re.sub(r"/\*.*?\*/", "", sql_clean, flags=re.DOTALL)
-    
-    # 4. Strip text literals ('...' or "...") to prevent flagging values like 'Creative'
-    sql_clean = re.sub(r"'.*?'", "''", sql_clean)
-    sql_clean = re.sub(r'".*?"', '""', sql_clean)
-    
-    # Normalize space and lowercase for regex checks
-    sql_lower = " ".join(sql_clean.lower().split())
-
-    # 5. Check allowed entry points
-    if not (sql_lower.startswith("select") or sql_lower.startswith("with")):
-        return False, "Only read-only SELECT or WITH (CTE) queries are permitted."
-
-    # 6. Scan strictly for isolated executable DDL/DML keywords
-    for kw in _BLOCKED_KEYWORDS:
-        if re.search(rf"\b{kw}\b", sql_lower):
-            return False, (
-                f"Blocked keyword detected: `{kw.upper()}`. "
-                "Only SELECT/WITH queries are allowed."
-            )
-
-    # 7. Check for dimension table self-join hallucinations
-    join_pattern = re.compile(r"(?:from|join)\s+(?:curated\.)?(\w+)", re.IGNORECASE)
-    table_counts: dict[str, int] = {}
-    for tbl in join_pattern.findall(sql_lower):
-        table_counts[tbl] = table_counts.get(tbl, 0) + 1
-
-    for dim in _KNOWN_DIMENSION_TABLES:
-        count = table_counts.get(dim, 0)
-        if count > 1:
-            return (
-                False,
-                f"The generated SQL joins `{dim}` {count} times. "
-                "This is a self-join hallucination — each dimension table may only appear once.",
-            )
-
-    return True, ""
-
-
-def _repair_sql(sql: str, validation_error: str) -> str:
-    """
-    Ask the repair model to fix a structurally invalid SQL query.
-
-    Preserves original business intent while removing violating constructs.
-    Falls back to the original SQL if the Groq client is unavailable.
-    """
-    client = get_groq_client()
-    if not client:
-        return sql
-
-    repair_prompt = (
-        "You are a PostgreSQL expert.\n\n"
-        "The following SQL violates schema rules.\n\n"
-        f"Validation Error:\n{validation_error}\n\n"
-        "Rules:\n"
-        "- Each dimension table may appear only once.\n"
-        "- Remove duplicate joins.\n"
-        "- Preserve the original business intent.\n"
-        "- Keep all filters and aggregations intact.\n"
-        "- Return ONLY executable SQL inside a ```sql block.\n\n"
-        f"SQL:\n{sql}"
-    )
-
-    response = client.chat.completions.create(
-        model=GROQ_REPAIR_MODEL,
-        messages=[{"role": "user", "content": repair_prompt}],
-        temperature=0,
-    )
-    return _extract_sql(response.choices[0].message.content)
-
-
-def _is_sql_generation_needed(user_query: str, last_assistant_msg: dict | None) -> bool:
-    """
-    Determines if the user's query requires generating a new SQL query,
-    or if it's a follow-up discussion about the existing results.
-    """
-    # If there is no prior history, we must generate SQL
-    if not last_assistant_msg or last_assistant_msg.get("df") is None:
-        return True
-
-    client = get_groq_client()
-    if not client:
-        return True
-
-    intent_prompt = (
-        "You are an AI assistant helping a data pipeline determine route logic.\n"
-        "Analyze the user's latest message and decide if they are asking for NEW data "
-        "that requires writing a database query, or if they are asking a follow-up question "
-        "discussing, explaining, filtering, or summarizing the data already shown to them.\n\n"
-        f"User Message: \"{user_query}\"\n\n"
-        "Respond with EXACTLY one word: 'NEW' or 'DISCUSSION'. Do not include punctuation."
-    )
-
-    try:
-        response = client.chat.completions.create(
-            model=GROQ_REPAIR_MODEL,  # Use your lighter/faster model for classification
-            messages=[{"role": "user", "content": intent_prompt}],
-            temperature=0,
-            max_tokens=5,
-        )
-        intent = response.choices[0].message.content.strip().upper()
-        return "NEW" in intent
-    except Exception:
-        return True  # Fallback to SQL generation if classification fails
-    
-# ── 3. Rendering Helpers ───────────────────────────────────────────────────
-
-def _render_chart(df: pd.DataFrame) -> None:
-    """
-    Intelligently identifies the best categorical axis (X) and numeric metric (Y)
-    from the DataFrame to render a clean, high-value bar chart.
-    """
-    # 1. Isolate numeric columns, filtering out obvious surrogate keys or numeric IDs
-    all_numeric = df.select_dtypes(include="number").columns.tolist()
-    numeric_cols = [
-        col for col in all_numeric 
-        if not any(ign in col.lower() for ign in ["_sk", "id", "number", "postal", "zip"])
-    ]
-    
-    # Fallback to all numeric if everything got filtered out (prevent breaking)
-    if not numeric_cols and all_numeric:
-        numeric_cols = all_numeric
-
-    if not numeric_cols:
-        return  # No valid metrics to plot
-
-    # 2. Score and pick the best Y-axis (Metric)
-    # Prioritize sum totals, amounts, counts, and averages over raw codes
-    def score_y_column(col_name: str) -> int:
-        c = col_name.lower()
-        if "amount" in c or "value" in c or "total" in c or "sum" in c:
-            return 10
-        if "count" in c or "rate" in c or "pct" in c or "percentage" in c:
-            return 8
-        if "time" in c or "ms" in c or "duration" in c:
-            return 5
-        return 0
-
-    y_axis = max(numeric_cols, key=score_y_column)
-    clean_y = y_axis.replace("_", " ").title()
-
-    # 3. Score and pick the best X-axis (Dimension)
-    # Exclude numeric column used for Y, and find the best descriptive column
-    remaining_cols = [col for col in df.columns if col != y_axis]
-    
-    def score_x_column(col_name: str) -> int:
-        c = col_name.lower()
-        # High priority for descriptive names/categories
-        if "name" in c or "category" in c or "type" in c or "status" in c:
-            return 10
-        if "occupation" in c or "channel" in c or "device" in c or "browser" in c:
-            return 9
-        if "city" in c or "state" in c or "country" in c:
-            return 8
-        if "date" in c or "month" in c or "year" in c:
-            return 7
-        # Low priority for IDs even if they are strings
-        if "id" in c or "sk" in c:
-            return -5
-        return 0
-
-    col, _ = st.columns([2, 1])
-
-    if not remaining_cols:
-        st.write(f"📊 **{clean_y} (by row index)**")
-        with col:
-            st.bar_chart(df[y_axis], use_container_width=True, y_label=clean_y)
-        return
-
-    x_axis = max(remaining_cols, key=score_x_column)
-    clean_x = x_axis.replace("_", " ").title()
-    
-    # 4. Final verification: If the chosen X-axis is an ID or completely numeric, 
-    # check if we can truncate the data length to prevent crowded UI crashing.
-    plot_df = df.set_index(x_axis)[y_axis]
-    if len(plot_df) > 20:
-        plot_df = plot_df.head(20) # Keep the chart clean and performant
-
-    st.write(f"📊 **{clean_y} by {clean_x}**")
-    with col:
-        st.bar_chart(
-            plot_df,
-            use_container_width=True,
-            x_label=clean_x,
-            y_label=clean_y,
-        )
-
-
-# ── 4. Core Pipeline ───────────────────────────────────────────────────────
-
-def _run_query_pipeline(user_query: str, container) -> None:
-    """
-    Execute the full analytics pipeline for a single user question.
-
-    Stages:
-      1. Build the LLM message payload (system prompt + conversation history).
-      2. Pass 1 — SQL generation via GROQ_SQL_MODEL.
-      3. Structural validation; repair if invalid.
-      4. Database execution; auto-repair on DB-level syntax error.
-      5. Pass 2 — NL executive summary via GROQ_SUMMARY_MODEL.
-      6. Render expanders, chart, and insight markdown inside `container`.
-      7. Persist interaction to the transaction log and session state.
-
-    Args:
-        user_query: The raw natural-language question from the user.
-        container:  The Streamlit container to render all output into.
-    """
-    client = get_groq_client()
-    if not client:
-        with container:
-            st.error("🔑 Groq API key missing — add GROQ_API_KEY to .streamlit/secrets.toml.")
-        return
-
-    # Build conversation payload (system prompt + prior turns + current question)
-    llm_payload = [{"role": "system", "content": SQL_SYSTEM_PROMPT}]
-    for msg in st.session_state.get("messages", [])[:-1]:
-        if msg.get("role") in ("user", "assistant"):
-            content = msg.get("content", "")
-            
-            # Inject historical SQL context back to the LLM for flawless multi-turn tracking
-            if msg.get("role") == "assistant" and msg.get("sql"):
-                content += f"\n\nHistorical SQL generated for this turn:\n```sql\n{msg['sql']}\n```"
-                
-            llm_payload.append({"role": msg["role"], "content": content})
-            
-    llm_payload.append({"role": "user", "content": user_query})
-
-    with container:
-        with st.chat_message("assistant"):
-            with st.status("Processing Analytics Request…", expanded=True) as status:
-                sql_query: str | None = None
-                try:
-                    # Get the last assistant message for context if it exists
-                    history = st.session_state.get("messages", [])
-                    last_assistant = next((m for m in reversed(history[:-1]) if m["role"] == "assistant"), None)
-                    
-                    # Check Intent
-                    generate_new_sql = _is_sql_generation_needed(user_query, last_assistant)
-
-                    if generate_new_sql:
-                        # ── BRANCH A: GENERATE NEW SQL (Your original logic) ──
-                        status.write("🧠 Generating SQL query…")
-                        completion = client.chat.completions.create(
-                            model=GROQ_SQL_MODEL,
-                            messages=llm_payload,
-                            temperature=0.0,
-                            max_tokens=600,
-                        )
-                        sql_query = _extract_sql(completion.choices[0].message.content)
-
-                        # Pre-execution structural verification
-                        is_valid, validation_error = _validate_sql(sql_query)
-                        if not is_valid:
-                            status.write("🔧 Attempting structural query repair…")
-                            sql_query = _repair_sql(sql_query, validation_error)
-
-                        # Database execution
-                        status.write("🗄️ Executing query against database…")
-                        conn = get_pooled_connection()
-                        try:
-                            try:
-                                result_df = pd.read_sql_query(sql_query, conn)
-                            except (psycopg2.Error, pd.errors.DatabaseError) as db_err:
-                                if hasattr(conn, "rollback"):
-                                    conn.rollback()
-                                status.write("🔄 Database rejected syntax. Running auto-repair loop…")
-                                repaired_sql = _repair_sql(sql_query, str(db_err))
-                                rep_valid, rep_err = _validate_sql(repaired_sql)
-                                if not rep_valid:
-                                    raise Exception(f"Post-repair structural guardrail violation: {rep_err}")
-                                sql_query = repaired_sql
-                                result_df = pd.read_sql_query(sql_query, conn)
-                        finally:
-                            release_pooled_connection(conn)
-                    
-                    else:
-                        # ── BRANCH B: USE EXISTING DATA FOR FOLLOW-UP ──
-                        status.write("💬 Processing follow-up on current dataset…")
-                        # Reuse previous SQL query and Dataframe state
-                        sql_query = last_assistant.get("sql")
-                        result_df = pd.DataFrame(last_assistant.get("df"))
-
-                    # ── HANDLE EMPTY STATE ──
-                    if result_df.empty:
-                        # (Keep your existing result_df.empty handler intact here...)
-                        return
-
-                    # ── PASS 2: GENERATE NL SUMMARY/INSIGHTS ──
-                    status.write("📝 Generating executive insight summary…")
-                    data_preview = result_df.head(15).to_markdown(index=False)
-                    
-                    # Expand summary prompt context so it knows it might be a follow-up
-                    summary_completion = client.chat.completions.create(
-                        model=GROQ_SUMMARY_MODEL,
-                        messages=[{
-                            "role": "system",
-                            "content": (
-                                "You are an experienced business analyst. Explain the results simply.\n\n"
-                                "Guidelines:\n"
-                                "• Directly answer the user's latest question or request.\n"
-                                "• Highlight key trends, anomalies, or address their clarification request.\n"
-                                "• Avoid technical terms, dataframes, or SQL vocabulary.\n"
-                                "• Focus completely on business context.\n"
-                                "• Output 3-6 concise bullets.\n\n"
-                                f"User Follow-up Request: {user_query}\n\n"
-                                f"Current Active Data Context:\n{data_preview}"
-                            ),
-                        }],
-                        temperature=0.3,
-                        max_tokens=400,
-                    )
-                    assistant_summary = summary_completion.choices[0].message.content
-
-                    status.update(
-                        label="✅ Analysis completed" if generate_new_sql else "✅ Response completed",
-                        state="complete",
-                        expanded=False,
-                    )
-
-                    # Render UI elements (Persists or builds new chart/dataframe view)
-                    if sql_query:
-                        with st.expander("🛠️ View Compiled Execution Query", expanded=False):
-                            st.code(sql_query, language="sql")
-                    with st.expander("📋 View Result Data", expanded=False):
-                        st.dataframe(result_df, use_container_width=True)
-
-                    _render_chart(result_df)
-                    st.markdown("### 📋 Key Insights")
-                    st.markdown(assistant_summary)
-
-                    log_chatbot_interaction(user_query, sql_query, result_df, assistant_summary)
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": assistant_summary,
-                        "sql": sql_query,
-                        "df": result_df.to_dict(orient="records"),
-                    })
-
-                except Exception as e:
-                    status.update(label="❌ Pipeline error", state="error", expanded=False)
-                    err_msg = (
-                        "An unexpected pipeline error occurred. "
-                        "Please clear history and try again."
-                    )
-                    st.error(err_msg)
-                    with st.expander("🔬 Technical Error Traceback (Debug Mode)", expanded=True):
-                        st.exception(e)
-                        if sql_query:
-                            st.markdown("**Generated SQL leading to error:**")
-                            st.code(sql_query, language="sql")
-
-                    log_chatbot_interaction(user_query, sql_query, None, str(e))
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": err_msg, "sql": sql_query, "df": None}
-                    )
-
-
-# ── 5. Public Entry-Point ──────────────────────────────────────────────────
-
-# Injected CSS that turns Streamlit's default layout into a proper chat UI:
-#
-#   • Hides the default page top-padding so the chat feed starts flush.
-#   • Pins st.chat_input to the bottom of the viewport at all times.
-#   • Gives the scrollable message feed enough bottom padding so the last
-#     message is never hidden behind the fixed input bar.
-#   • Removes the fixed-height cap on the st.container so the feed grows
-#     naturally and the browser scroll handles overflow instead.
-#   • Tightens avatar spacing and aligns bubbles closer to how modern chat
-#     apps lay out turns (user right, assistant left).
+# ── CSS Layout Constants ───────────────────────────────────────────────────
 
 _CHAT_UI_CSS = """
 <style>
 .block-container {
-    padding-top: 0.5rem !important;
+    padding-top: 1rem !important;
     padding-bottom: 0rem !important;
 }
+div[data-testid="stVContainer"] {
+    overflow: visible !important;
+    padding-bottom: 100px !important;
+}
 .chat-header {
-    padding: 0.5rem 0 0.5rem 0;
+    position: sticky;
+    top: -1rem;
+    z-index: 999;
+    background-color: #0e1117;
+    background: var(--background-color, #0e1117);
+    padding: 1rem 0rem 1rem 0rem;
     border-bottom: 1px solid rgba(128,128,128,0.15);
-    margin-bottom: 0.75rem;
+    margin-bottom: 1.5rem;
+    width: 100%;
 }
 div[data-testid="stChatMessage"] {
-    padding: 0.5rem 0.5rem !important;
+    padding: 0.6rem 0.8rem !important;
     border-radius: 12px !important;
-    margin-bottom: 0.4rem !important;
+    margin-bottom: 0.5rem !important;
 }
 div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
-    background: rgba(99, 102, 241, 0.05) !important;
+    background: rgba(99, 102, 241, 0.06) !important;
 }
 div[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) {
-    background: rgba(128, 128, 128, 0.04) !important;
+    background: rgba(128, 128, 128, 0.05) !important;
 }
-
-/* ── CRITICAL FIX FOR CLIPPING ── */
-/* Adds an invisible spatial buffer zone at the bottom of the scroll container */
-div[data-testid="stVContainer"] {
-    padding-bottom: 70px !important;
-}
-
 .chat-empty-state {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    height: 30vh;
+    height: 35vh;
     opacity: 0.45;
     gap: 0.5rem;
 }
 </style>
 """
 
-
-def render_chatbot_tab() -> None:
-    """
-    Render the full Analytics AI Chatbot interface inside Tab 3.
-
-    UI layout:
-      - Injected CSS pins the chat input to the bottom of the viewport.
-      - Message history fills the remaining vertical space and scrolls naturally.
-      - An empty-state hint is shown when no messages exist yet.
-      - Sidebar carries engine metadata, connection status, and clear-history.
-    """
-    # Inject chat UI styles once per render
-    st.markdown(_CHAT_UI_CSS, unsafe_allow_html=True)
-
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    _render_sidebar()
-
-    # Compact header (replaces st.header to avoid excess vertical space)
-    st.markdown(
-        '<div class="chat-header">'
-        '<strong>💳 Banking Transactions Analytics</strong>&nbsp;&nbsp;'
-        '<span style="font-size:0.82rem;opacity:0.55;">'
-        'Ask anything about transactions, accounts, fraud patterns, and more.'
-        '</span></div>',
-        unsafe_allow_html=True,
-    )
-
-    # Use an unbounded container so messages stack naturally and the page
-    # scroll (not a fixed-height inner scroll) handles overflow.
-    chat_container = st.container()
-    _render_history(chat_container)
-
-    # Fixed-bottom chat input (styled via CSS above)
-    if user_query := st.chat_input("Ask anything about your transactions…"):
-        st.session_state.messages.append({"role": "user", "content": user_query})
-        with chat_container:
-            with st.chat_message("user"):
-                st.markdown(user_query)
-        _run_query_pipeline(user_query, chat_container)
-
+# ── Sidebar Engine Status Controls ─────────────────────────────────────────
 
 def _render_sidebar() -> None:
-    """Populate the sidebar with engine metadata and session controls."""
     with st.sidebar:
         st.markdown("---")
         st.markdown("### ⚙️ Analytics Engine")
@@ -625,19 +65,29 @@ def _render_sidebar() -> None:
         else:
             st.error("Groq Pipeline: Key Missing")
         st.markdown("---")
+        
+        # User Isolated Session Clear Button
         if st.button("🗑️ Clear Chat History", use_container_width=True, key="clear_chat_btn"):
+            current_user_key = st.session_state.get("user_key")
+            if current_user_key:
+                from database.connection import get_pooled_connection, release_pooled_connection
+                conn = get_pooled_connection()
+                try:
+                    with conn.cursor() as cursor:
+                        # Clear records belonging exclusively to the current user
+                        cursor.execute("DELETE FROM curated.chatbot_history WHERE user_key = %s;", (int(current_user_key),))
+                    conn.commit()
+                except Exception as e:
+                    print(f"Failed to truncate personal chat database partition: {e}")
+                finally:
+                    release_pooled_connection(conn)
+            
             st.session_state.messages = []
             st.rerun()
 
+# ── Chronological User-Isolated History Rendering ──────────────────────────
 
 def _render_history(chat_container) -> None:
-    """
-    Replay all stored messages into the chat container.
-
-    Shows an empty-state prompt when no messages exist yet.
-    For assistant turns, also re-renders the SQL expander, data expander,
-    and chart so history is fully interactive.
-    """
     with chat_container:
         if not st.session_state.messages:
             st.markdown(
@@ -651,23 +101,48 @@ def _render_history(chat_container) -> None:
 
         for idx, msg in enumerate(st.session_state.messages):
             with st.chat_message(msg.get("role", "assistant")):
-                st.markdown(msg.get("content", ""))
-
                 if msg.get("role") != "assistant":
+                    st.markdown(msg.get("content", ""))
                     continue
+                # Safely delegates history rendering down to the unified turn controller
+                render_assistant_turn(msg, df_key_suffix=str(idx))
 
-                if msg.get("sql"):
-                    with st.expander("🛠️ View Compiled Execution Query", expanded=False):
-                        st.code(msg["sql"], language="sql")
+# ── Main Entrypoint View Tab Controller ────────────────────────────────────
 
-                stored_df = msg.get("df")
-                if stored_df is not None:
-                    df_restored = pd.DataFrame(stored_df)
-                    if not df_restored.empty:
-                        with st.expander("📋 View Result Data", expanded=False):
-                            st.dataframe(
-                                df_restored,
-                                use_container_width=True,
-                                key=f"hist_df_{idx}",
-                            )
-                        _render_chart(df_restored)
+def render_chatbot_tab() -> None:
+    # Inject CSS layers instantly
+    st.markdown(_CHAT_UI_CSS, unsafe_allow_html=True)
+
+    current_user_key = st.session_state.get("user_key")
+
+    # Strict multi-user isolation check during initialization
+    if "messages" not in st.session_state or not st.session_state.messages:
+        if current_user_key:
+            st.session_state.messages = load_user_chat_history(current_user_key)
+        else:
+            st.session_state.messages = []
+
+    # Build Workspace Header
+    _render_sidebar()
+    st.markdown(
+        '<div class="chat-header">'
+        '<span style="font-size: 1.2rem; font-weight: 700; color: white;">💳 Banking Transactions Analytics</span>'
+        '<br/>'
+        '<span style="font-size: 0.85rem; opacity: 0.65; display: inline-block; margin-top: 0.2rem;">'
+        'Ask anything about transactions, accounts, fraud patterns, and more.'
+        '</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Render Active Canvas
+    chat_container = st.container()
+    _render_history(chat_container)
+
+    # Process New Questions safely
+    if user_query := st.chat_input("Ask anything about your transactions…"):
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        with chat_container:
+            with st.chat_message("user"):
+                st.markdown(user_query)
+        run_query_pipeline(user_query, chat_container)

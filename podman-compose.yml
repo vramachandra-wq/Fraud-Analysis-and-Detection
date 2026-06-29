@@ -107,6 +107,12 @@ services:
     volumes:
       - zookeeper_data:/var/lib/zookeeper/data
       - zookeeper_log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/2181'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
     networks:
       - fraud_net
 
@@ -175,7 +181,6 @@ services:
       - fraud_net
 
   # 6. APACHE SUPERSET — BI Visualization Layer
-  # 6. APACHE SUPERSET — BI Visualization Layer
   superset:
     image: apache/superset:3.0.0
     container_name: superset
@@ -204,13 +209,29 @@ services:
     depends_on:
       olap_db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8088/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
 
   # 7. AIRFLOW 
   airflow_init:
     <<: *airflow-common
     container_name: airflow_init
     entrypoint: /bin/bash
-    command: -c "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@fraudpoc.local"
+    command: >
+      -c "
+      airflow db migrate &&
+      airflow users create \
+        --username admin \
+        --password admin \
+        --firstname Admin \
+        --lastname User \
+        --role Admin \
+        --email admin@fraudpoc.local || true
+      "
     restart: "no"
 
   airflow_scheduler:

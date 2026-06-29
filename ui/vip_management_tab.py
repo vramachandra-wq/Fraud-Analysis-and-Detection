@@ -9,7 +9,7 @@ from services.vip_service import (
 )
 from ui.dialogs import (
     show_vip_blacklist_blocked_dialog,
-    show_confirm_vip_revocation_dialog,  # Added confirmation dialog import
+    show_confirm_vip_revocation_dialog,
 )
 
 
@@ -28,8 +28,8 @@ def render_vip_management_tab() -> None:
         st.success(f"🔥 Account **{search_account_id}** successfully removed from VIP status.")
         # Clear the temporary signal state so it doesn't loop infinitely
         del st.session_state[f"vip_revoked_{search_account_id}"]
-        # Force a rendering reload to show the fresh clean Registration UI variant downstream
-        st.button("Acknowledge & Refresh View", use_container_width=True)
+        if st.button("Acknowledge & Refresh View", use_container_width=True):
+            st.rerun()
         return
 
     vip_data = fetch_vip_details(search_account_id)
@@ -129,5 +129,4 @@ def _render_new_vip_registration(account_id: str) -> None:
                     st.success(f"Account **{account_id}** successfully created as a new VIP profile!")
                     st.rerun()
                 except VIPBlacklistedError:
-                    # Fallthrough guard handling logic safety condition defensively
                     show_vip_blacklist_blocked_dialog(account_id)

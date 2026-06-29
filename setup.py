@@ -107,6 +107,8 @@ try:
         r"sql\ml_transaction_logs.sql",
         r"sql\lookup_table_schema_creation.sql",
         r"sql\rules_engine_function.sql",
+        r"sql\user_credentials_creation.sql",
+        r"sql\user_sessions_table_creation.sql"
     ]
 
     for file_path in sql_files:

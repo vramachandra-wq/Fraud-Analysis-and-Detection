@@ -11,7 +11,7 @@ from database.transaction_repository import (
     get_location_coordinates,
     verify_device_exists,
     verify_location_exists,
-    check_active_cooldown  # IMPORTED: Active database lookback verification method
+    check_active_cooldown  
 )
 from ml.prediction_service import run_ml_prediction, extract_engineered_features
 from ai.summarizer import generate_transaction_summary
@@ -31,11 +31,13 @@ def calculate_haversine_distance(lat1: float, lon1: float, lat2: float, lon2: fl
 def process_transaction(tx: dict) -> dict:
     """
     Full integrated fraud-detection pipeline for a single transaction.
-    Enforces master validations, active historical cooldowns, blacklists, and velocity rules.
+    Enforces master validations, active historical cooldowns, blacklists, 
+    and VIP metric limits / velocity rules.
     """
     account_id = tx["account_id"]
     device_id = tx["device_id"]
     location_id = tx["location_id"]
+    amount = float(tx["amount"])
     
     # ── STEP 0: MASTER DATA VALIDATION ──────────────────────────────────────
     if not is_valid_account(account_id):
@@ -54,7 +56,6 @@ def process_transaction(tx: dict) -> dict:
     is_vip = vip_rules is not None
 
     # ── STEP 0.5: ACTIVE COOLDOWN ENFORCEMENT ────────────────────────────────
-    # Enforces hard lock out if a non-VIP triggered a rapid rule limitation recently
     if not is_vip:
         active_lockout = check_active_cooldown(account_id, current_tx_time)
         if active_lockout:
@@ -98,6 +99,7 @@ def process_transaction(tx: dict) -> dict:
             "validation_status": "VALID",
         }
 
+    # ── STEP 1.5: VIP LIMITS EVALUATION & ENFORCEMENT ────────────────────────
     vip_details = None
     if is_vip:
         amt_limit = float(vip_rules["amount_per_transaction_limit"])
@@ -113,9 +115,31 @@ def process_transaction(tx: dict) -> dict:
             "last_ts": str(last_ts),
         }
 
+        # Enforce VIP Daily Transaction Count Limit
+        if current_vol >= vol_limit:
+            return {
+                "source": "VIP_BREACH",
+                "is_blacklisted": False,
+                "vip_breach_type": "VIP_VOLUME_LIMIT_BREACH",
+                "vip_details": vip_details,
+                "features_dict": features_dict,
+                "validation_status": "VALID"
+            }
+
+        # Enforce VIP Amount Per Transaction Limit
+        if amount > amt_limit:
+            return {
+                "source": "VIP_BREACH",
+                "is_blacklisted": False,
+                "vip_breach_type": "VIP_AMOUNT_LIMIT_BREACH",
+                "vip_details": vip_details,
+                "features_dict": features_dict,
+                "validation_status": "VALID"
+            }
+
     # ── STEP 2: FRAUD AND VELOCITY RULES RUNS ──────────────────────────────────
     
-    # 2a. Rapid Transactions Rule (Rolling 2 minutes, max 3 tx. Block 4th) - BYPASSED FOR VIPs
+    # 2a. Rapid Transactions Rule (Rolling 2 minutes, max 3 tx) - 🛑 STRICTLY BYPASSED FOR VIPs
     if not is_vip:
         two_mins_ago = current_tx_time - timedelta(minutes=2)
         recent_account_count = get_recent_account_tx_count(account_id, two_mins_ago)
@@ -142,14 +166,29 @@ def process_transaction(tx: dict) -> dict:
                 "validation_status": "VALID",
             }
 
-    # 2b. Device Switching Fraud Rule (Diff device within <= 5 mins) - BYPASSED FOR VIPs
+    # 2b. Device Switching Fraud Rule (Diff device within <= 5 mins) - 🛠️ NOW ENFORCED FOR VIP VIA MANUAL OVERRIDE
     one_hour_ago = current_tx_time - timedelta(hours=1)
     last_tx = get_last_transaction_location(account_id, one_hour_ago)
 
-    if not is_vip and last_tx:
+    if last_tx:
         if last_tx.get("device_id") != device_id:
             time_delta_sec = (current_tx_time - last_tx["timestamp"]).total_seconds()
-            if time_delta_sec <= 300.0:  # 5 minutes
+            if time_delta_sec <= 300.0:
+                if is_vip:
+                    # Intercept VIP and route to manual review panel instead of hard-failing
+                    vip_details["prev_device_id"] = last_tx["device_id"]
+                    vip_details["curr_device_id"] = device_id
+                    vip_details["time_delta_sec"] = time_delta_sec
+                    return {
+                        "source": "VIP_BREACH",
+                        "is_blacklisted": False,
+                        "vip_breach_type": "DEVICE_SWITCHING_BREACH",
+                        "vip_details": vip_details,
+                        "features_dict": features_dict,
+                        "validation_status": "VALID",
+                    }
+                
+                # Standard Account execution path (Hard fail block)
                 ai_summary = "Transaction blocked. Device switching detected."
                 log_transaction((
                     account_id, device_id, location_id, tx["transaction_type"],
@@ -171,7 +210,7 @@ def process_transaction(tx: dict) -> dict:
                     "validation_status": "VALID",
                 }
 
-    # 2c. Geospatial Travel Limit Velocity Rule (>100 KM within <= 1 Hour) - ENFORCED FOR ALL (VIP + NON-VIP)
+    # 2c. Geospatial Travel Limit Velocity Rule (>100 KM within <= 1 Hour) - ENFORCED FOR ALL
     if last_tx and last_tx["latitude"] is not None and last_tx["longitude"] is not None:
         curr_coords = get_location_coordinates(location_id)
         if curr_coords and curr_coords["latitude"] is not None and curr_coords["longitude"] is not None:

@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from database.transaction_repository import log_transaction
+from database.blacklist_repository import remove_from_blacklist, add_to_blacklist
 from ml.prediction_service import run_ml_prediction
 from ai.summarizer import generate_transaction_summary
 from services.fraud_service import process_transaction
@@ -161,11 +162,10 @@ def _render_account_cooldown_view(remaining_hours: float) -> None:
         """,
         unsafe_allow_html=True
     )
-    st.metric(label="Fraud Probability Override", value="100.00%")
 
 
 def _render_device_switching_view() -> None:
-    st.error("🚨 Device Switching Guardrail Tripped")
+    st.error("🚨 Device Switching Detected")
     st.markdown(
         """
         <div style="background-color:#f8d7da; color:#721c24; padding:14px; border-radius:8px; font-weight:bold; border: 1px solid #f5c6cb; margin-bottom:15px;">
@@ -174,11 +174,10 @@ def _render_device_switching_view() -> None:
         """,
         unsafe_allow_html=True
     )
-    st.metric(label="Fraud Probability Override", value="100.00%")
 
 
 def _render_geo_velocity_view(breach_details: dict) -> None:
-    st.error("🚨 Location Velocity Guardrail Tripped")
+    st.error("🚨 Impossible Location Velocity Detected")
     st.markdown(
         """
         <div style="background-color:#f8d7da; color:#721c24; padding:14px; border-radius:8px; font-weight:bold; border: 1px solid #f5c6cb; margin-bottom:15px;">
@@ -193,8 +192,7 @@ def _render_geo_velocity_view(breach_details: dict) -> None:
             f"**Time Delta:** {breach_details.get('time_delta_mins', 0)} mins"
         )
     else:
-        st.info("ℹ️ Distance or velocity analytics details are unavailable for this record configuration.")
-    st.metric(label="Fraud Probability Override", value="100.00%")
+        st.info("Distance or velocity analytics details are unavailable for this record configuration.")
 
 
 def _render_blacklisted_view(
@@ -205,9 +203,7 @@ def _render_blacklisted_view(
 ) -> None:
     st.metric(label="Fraud Probability", value="100.00%")
     if st.button("🔓 Whitelist Account", use_container_width=True):
-        from database.blacklist_repository import remove_from_blacklist
         remove_from_blacklist(target_acct)
-
         prob, pred, risk_cat = run_ml_prediction(cached_df)
         final_status = "FAILED" if pred == 1 else tx_details.get("transaction_status", "PENDING")
 
@@ -330,7 +326,6 @@ def _render_ml_result_view(target_acct: str, tx_details: dict) -> None:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🚫 Blacklist Account", use_container_width=True):
-            from database.blacklist_repository import add_to_blacklist
             add_to_blacklist(target_acct)
             show_blacklist_dialog(target_acct)
     with col2:

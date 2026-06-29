@@ -4,7 +4,11 @@ CREATE TABLE IF NOT EXISTS curated.ai_chatbot_logs (
     sql_code          TEXT,
     generated_table   JSONB,                  -- Stores data rows as a structural JSON array
     ai_summary        TEXT,
-    created_at        TIMESTAMP DEFAULT NOW() -- Tracks exactly when the query ran
+    created_at        TIMESTAMP DEFAULT NOW(), -- Tracks exactly when the query ran
+    user_key          INT,
+    username          VARCHAR(50),
+    prompt_tokens     INT,
+    completion_tokens INT
 );
 
 CREATE INDEX idx_chatbot_logs_created ON curated.ai_chatbot_logs(created_at DESC);

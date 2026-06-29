@@ -17,7 +17,7 @@ CREATE OR REPLACE FUNCTION curated.fn_analyze_transaction_fraud(
     p_velocity_hours            INT     DEFAULT 24,
     p_velocity_min_txns         INT     DEFAULT 2,
     p_velocity_km_threshold     NUMERIC DEFAULT 100,
-    p_velocity_kmh              NUMERIC DEFAULT 100,    -- max plausible speed (km/h)
+    p_velocity_kmh              NUMERIC DEFAULT 100,
 
     -- Rule 4: Concurrent Account Devices
     p_device_minutes_window     INT     DEFAULT 10,
