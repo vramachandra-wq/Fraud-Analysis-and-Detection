@@ -201,7 +201,7 @@ def _render_blacklisted_view(
     tx_details: dict,
     features_dict: dict,
 ) -> None:
-    st.metric(label="Fraud Probability", value="100.00%")
+    #st.metric(label="Fraud Probability", value="100.00%")
     if st.button("🔓 Whitelist Account", use_container_width=True):
         remove_from_blacklist(target_acct)
         prob, pred, risk_cat = run_ml_prediction(cached_df)
@@ -304,12 +304,12 @@ def _render_ml_result_view(target_acct: str, tx_details: dict) -> None:
     pred = st.session_state.prediction
     risk_cat = st.session_state.risk_cat
 
-    if pred == 1:
-        st.error("🚨 Fraudulent Transaction Detected")
-    else:
-        st.success("✅ Legitimate Behavioural")
+    #if pred == 1:
+        #st.error("🚨 Fraudulent Transaction Detected")
+    #else:
+        #st.success("✅ Legitimate Behavioural")
 
-    st.metric(label="Fraud Probability", value=f"{prob:.2%}")
+    #st.metric(label="Fraud Probability", value=f"{prob:.2%}")
 
     if risk_cat == "NO_RISK":
         st.markdown('<div style="background-color:#d4edda; color:#155724; padding:12px; border-radius:8px; font-weight:bold; text-align:center; font-size:18px;">🟢 Risk Category: NO_RISK</div>', unsafe_allow_html=True)

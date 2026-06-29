@@ -206,6 +206,46 @@ LEFT JOIN account_current da    ON fr.account_id = da.account_id
 LEFT JOIN device_current dd    ON fr.device_id = dd.device_id
 LEFT JOIN location_current dl  ON fr.location_id = dl.location_id;
 
---Table for Dashboards
-CREATE TABLE IF NOT EXISTS curated.fraud_transaction_analytics AS 
+
+CREATE TABLE IF NOT EXISTS curated.fraud_transaction_analytics_1 AS 
 SELECT * FROM curated.vw_fraud_transaction_analytics;
+
+--Table for Dashboards
+CREATE TABLE IF NOT EXISTS curated.fraud_transaction_analytics AS
+SELECT
+    transaction_id,
+    transaction_type,
+    transaction_date,
+    transaction_time,
+    fraud_flag,
+    channel,
+    customer_country,
+    device_type,
+    amount,
+    transaction_timestamp,
+    account_type,
+    account_status,
+    account_id,
+    credit_score,
+    annual_income,
+    merchant_category,
+    customer_id,
+    transaction_status,
+    bank_name,
+    customer_age,
+    credit_score_band,
+    opening_date,
+    fraud_reason,
+    location_id,
+    device_id,
+    full_name,
+    email,
+    phone,
+    date_of_birth,
+    gender,
+    nationality,
+    customer_active_flag,
+    operating_system,
+    merchant_name,
+    merchant_country
+FROM curated.fraud_transaction_analytics_1;
